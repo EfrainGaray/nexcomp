@@ -1,0 +1,36 @@
+[package]
+name = "nexcomp"
+version = "1.5.0"
+edition = "2021"
+rust-version = "1.75"
+description = "NEXCOMP — Next-generation lossless compressor"
+license = "MIT"
+
+[dependencies]
+thiserror = "1.0"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+rand = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "rans_bench"
+harness = false
+
+[[bench]]
+name = "repair_bench"
+harness = false
+
+[[bench]]
+name = "ajedrez_gain"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# target-cpu = "native" # set via RUSTFLAGS="-C target-cpu=native"
