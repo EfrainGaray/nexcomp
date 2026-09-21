@@ -7,7 +7,8 @@
 //! - three-range length coder with probability trees throughout
 
 use crate::literal_coder::LiteralCoder;
-use crate::lz77::{Lz77Encoder, Token};
+use crate::lz77::hash::HashChain;
+use crate::lz77::{Lz77Encoder, Token, MAX_CHAIN, MAX_MATCH, MAX_WINDOW, MIN_MATCH};
 use crate::lzma_state::{LzmaState, StateProbs, NUM_POS_STATES};
 use crate::range_coder::{Prob, RangeDecoder, RangeEncoder, PROB_INIT};
 
@@ -321,18 +322,276 @@ fn copy_match(output: &mut Vec<u8>, offset: usize, length: usize) -> Result<(), 
 }
 
 // ---------------------------------------------------------------------------
+// Price-based optimal parsing
+// ---------------------------------------------------------------------------
+
+const PARSE_ITERATIONS: usize = 1;
+/// Matches at least this long are taken greedily (bounds DP work on repetitive data).
+const NICE_LEN: usize = 64;
+
+/// Static bit prices estimated from the token statistics of a previous parse.
+struct Prices {
+    literal: [f32; 256],
+    match_flag: f32,
+    short_rep: f32,
+    rep: [f32; 4],
+    match_len: Vec<f32>,
+    rep_len: Vec<f32>,
+    dist_slot: [f32; NUM_DIST_SLOTS],
+}
+
+fn prices_of(counts: &[u32]) -> Vec<f32> {
+    let total: u32 = counts.iter().sum::<u32>() + counts.len() as u32;
+    counts
+        .iter()
+        .map(|&c| (total as f32 / (c + 1) as f32).log2())
+        .collect()
+}
+
+impl Prices {
+    fn from_tokens(tokens: &[Token]) -> Self {
+        let mut literal = [0u32; 256];
+        // kinds: literal, match, short rep, rep0..rep3
+        let mut kind = [0u32; 7];
+        let mut match_len = vec![0u32; MAX_MATCH + 1];
+        let mut rep_len = vec![0u32; MAX_MATCH + 1];
+        let mut dist_slots = [0u32; NUM_DIST_SLOTS];
+        let mut reps = [1u32, 2, 3, 4];
+
+        for token in tokens {
+            match *token {
+                Token::Literal(b) => {
+                    literal[b as usize] += 1;
+                    kind[0] += 1;
+                }
+                Token::Match { offset, length } => {
+                    if let Some(idx) = reps.iter().position(|&r| r == offset) {
+                        if idx == 0 && length == 1 {
+                            kind[2] += 1;
+                        } else {
+                            kind[3 + idx] += 1;
+                            rep_len[length as usize] += 1;
+                            move_rep_to_front(&mut reps, idx);
+                        }
+                    } else {
+                        kind[1] += 1;
+                        match_len[length as usize] += 1;
+                        dist_slots[dist_slot(offset - 1) as usize] += 1;
+                        reps = [offset, reps[0], reps[1], reps[2]];
+                    }
+                }
+            }
+        }
+
+        let kind = prices_of(&kind);
+        let lit = prices_of(&literal);
+        let slots = prices_of(&dist_slots);
+        let mut prices = Self {
+            literal: [0.0; 256],
+            match_flag: kind[1],
+            short_rep: kind[2],
+            rep: [kind[3], kind[4], kind[5], kind[6]],
+            match_len: prices_of(&match_len),
+            rep_len: prices_of(&rep_len),
+            dist_slot: [0.0; NUM_DIST_SLOTS],
+        };
+        // The greedy seed parse never emits short reps or length-2 reps, so their
+        // counted prices are meaninglessly high; bound them so the DP can try them.
+        prices.short_rep = prices.short_rep.min(prices.rep[0]);
+        prices.rep_len[2] = prices.rep_len[2].min(prices.rep_len[3]);
+        for b in 0..256 {
+            prices.literal[b] = kind[0] + lit[b];
+        }
+        for slot in 0..NUM_DIST_SLOTS {
+            prices.dist_slot[slot] = slots[slot] + slot_base_and_bits(slot as u32).1 as f32;
+        }
+        prices
+    }
+
+    fn normal_match(&self, dist: u32, len: usize) -> f32 {
+        self.match_flag + self.match_len[len] + self.dist_slot[dist_slot(dist - 1) as usize]
+    }
+}
+
+fn match_len_at(data: &[u8], pos: usize, dist: usize, max_len: usize) -> usize {
+    let mut len = 0;
+    while len < max_len && data[pos - dist + len] == data[pos + len] {
+        len += 1;
+    }
+    len
+}
+
+/// Collect hash-chain matches at `pos` with strictly increasing length (nearest first).
+fn find_matches(chain: &HashChain, data: &[u8], pos: usize, max_len: usize, out: &mut Vec<(u32, usize)>) {
+    out.clear();
+    if max_len < MIN_MATCH {
+        return;
+    }
+    let h = HashChain::hash3(data[pos], data[pos + 1], data[pos + 2]);
+    let mut candidate = chain.head[h];
+    let mut best_len = MIN_MATCH - 1;
+    for _ in 0..MAX_CHAIN {
+        if candidate == u32::MAX {
+            break;
+        }
+        let cand = candidate as usize;
+        let dist = pos - cand;
+        if dist > MAX_WINDOW {
+            break;
+        }
+        if data[cand + best_len] == data[pos + best_len] {
+            let len = match_len_at(data, pos, dist, max_len);
+            if len > best_len {
+                best_len = len;
+                out.push((dist as u32, len));
+                if len == max_len {
+                    break;
+                }
+            }
+        }
+        candidate = chain.prev[cand % MAX_WINDOW];
+    }
+}
+
+/// Shortest-path parse over literal / short-rep / rep / match edges under `prices`.
+/// Rep distances are tracked along the cheapest path into each position.
+fn optimal_parse(data: &[u8], prices: &Prices) -> Vec<Token> {
+    let n = data.len();
+    let mut cost = vec![f32::INFINITY; n + 1];
+    let mut from_len = vec![0u16; n + 1];
+    let mut from_dist = vec![0u32; n + 1];
+    let mut reps = vec![[1u32, 2, 3, 4]; n + 1];
+    let mut chain = HashChain::new();
+    let mut matches = Vec::new();
+    cost[0] = 0.0;
+
+    let mut relax = |cost: &mut [f32], reps: &mut [[u32; 4]], to: usize, c: f32, len: usize, dist: u32, r: [u32; 4]| {
+        if c < cost[to] {
+            cost[to] = c;
+            from_len[to] = len as u16;
+            from_dist[to] = dist;
+            reps[to] = r;
+        }
+    };
+
+    let mut i = 0;
+    while i < n {
+        let here = cost[i];
+        let r = reps[i];
+        let max_len = (n - i).min(MAX_MATCH);
+
+        relax(&mut cost, &mut reps, i + 1, here + prices.literal[data[i] as usize], 1, 0, r);
+
+        let mut longest = 0usize;
+        let mut longest_edge = (0u32, r);
+        for (idx, &rep) in r.iter().enumerate() {
+            if rep as usize > i {
+                continue;
+            }
+            let len = match_len_at(data, i, rep as usize, max_len);
+            if idx == 0 && len >= 1 {
+                relax(&mut cost, &mut reps, i + 1, here + prices.short_rep, 1, rep, r);
+            }
+            if len < 2 {
+                continue;
+            }
+            let mut moved = r;
+            move_rep_to_front(&mut moved, idx);
+            if len > longest {
+                longest = len;
+                longest_edge = (rep, moved);
+            }
+            if len < NICE_LEN {
+                for l in 2..=len {
+                    relax(&mut cost, &mut reps, i + l, here + prices.rep[idx] + prices.rep_len[l], l, rep, moved);
+                }
+            }
+        }
+
+        if i + MIN_MATCH <= n {
+            find_matches(&chain, data, i, max_len, &mut matches);
+            let mut prev_len = MIN_MATCH - 1;
+            for &(dist, len) in &matches {
+                if !r.contains(&dist) {
+                    let shifted = [dist, r[0], r[1], r[2]];
+                    if len > longest {
+                        longest = len;
+                        longest_edge = (dist, shifted);
+                    }
+                    if len < NICE_LEN {
+                        for l in prev_len + 1..=len {
+                            relax(&mut cost, &mut reps, i + l, here + prices.normal_match(dist, l), l, dist, shifted);
+                        }
+                    }
+                }
+                prev_len = len;
+            }
+            chain.insert(HashChain::hash3(data[i], data[i + 1], data[i + 2]), i as u32);
+        }
+
+        if longest >= NICE_LEN {
+            // Commit to the long match and skip the positions it covers.
+            let (dist, new_reps) = longest_edge;
+            let to = i + longest;
+            let c = if r.contains(&dist) {
+                let idx = r.iter().position(|&x| x == dist).unwrap();
+                here + prices.rep[idx] + prices.rep_len[longest]
+            } else {
+                here + prices.normal_match(dist, longest)
+            };
+            relax(&mut cost, &mut reps, to, c, longest, dist, new_reps);
+            for p in i + 1..to {
+                if p + MIN_MATCH <= n {
+                    chain.insert(HashChain::hash3(data[p], data[p + 1], data[p + 2]), p as u32);
+                }
+            }
+            i = to;
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut tokens = Vec::new();
+    let mut pos = n;
+    while pos > 0 {
+        let len = from_len[pos] as usize;
+        let dist = from_dist[pos];
+        tokens.push(if dist == 0 {
+            Token::Literal(data[pos - 1])
+        } else {
+            Token::Match { offset: dist, length: len as u16 }
+        });
+        pos -= len;
+    }
+    tokens.reverse();
+    tokens
+}
+
+// ---------------------------------------------------------------------------
 // Encoder
 // ---------------------------------------------------------------------------
 
 pub fn encode_block(data: &[u8]) -> Vec<u8> {
+    let mut lz = Lz77Encoder::new();
+    let (mut tokens, _) = lz.encode(data);
+    // Re-parse with prices learned from the previous parse; keep the smallest output.
+    let mut best = encode_tokens(data, &tokens);
+    for _ in 0..PARSE_ITERATIONS {
+        tokens = optimal_parse(data, &Prices::from_tokens(&tokens));
+        let encoded = encode_tokens(data, &tokens);
+        if encoded.len() < best.len() {
+            best = encoded;
+        }
+    }
+    best
+}
+
+fn encode_tokens(data: &[u8], tokens: &[Token]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     if data.is_empty() {
         return out;
     }
-
-    let mut lz = Lz77Encoder::new();
-    let (tokens, _) = lz.encode(data);
 
     let mut enc = RangeEncoder::new();
     let mut state = LzmaState::new();
@@ -346,7 +605,7 @@ pub fn encode_block(data: &[u8]) -> Vec<u8> {
 
     for token in tokens {
         let pos_state = pos & 0x3;
-        match token {
+        match *token {
             Token::Literal(byte) => {
                 enc.encode_bit(&mut probs.is_match[state.state][pos_state], 0);
                 let prev_byte = if pos == 0 { 0 } else { data[pos - 1] };
@@ -531,6 +790,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn optimal_parse_roundtrips_short_reps_and_beats_greedy() {
+        // Small alphabet with local structure: exercises short-rep and length-2 rep edges.
+        let mut state: u64 = 0x1234_5678;
+        let data: Vec<u8> = (0..60_000)
+            .map(|i| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                if i % 7 < 4 { b'a' + ((state >> 40) % 3) as u8 } else { b"compress"[i % 8] }
+            })
+            .collect();
+
+        let (greedy, _) = Lz77Encoder::new().encode(&data);
+        let tokens = optimal_parse(&data, &Prices::from_tokens(&greedy));
+        assert!(tokens.iter().any(|t| matches!(t, Token::Match { length: 1..=2, .. })));
+
+        let encoded = encode_tokens(&data, &tokens);
+        assert_eq!(decode_block(&encoded).expect("decode ok"), data);
+        assert!(encoded.len() < encode_tokens(&data, &greedy).len());
     }
 
     #[test]
