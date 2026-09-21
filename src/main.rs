@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use thiserror::Error;
@@ -479,12 +478,12 @@ fn inspect_codecs(payload: &[u8]) -> Result<String, NexcompError> {
 // Encryption wrapper format for the new adaptive pipeline
 //
 // When --encrypt is used, the on-disk format is:
-//   [4B "NXE1"][4B orig_file_len LE][encrypted blob of adaptive_compress output]
+//   [4B "NXE2"][4B orig_file_len LE][encrypted blob of adaptive_compress output]
 //
 // The AAD for AEAD is the 8-byte header itself so the sizes are authenticated.
 // ---------------------------------------------------------------------------
 
-const ENCRYPT_MAGIC: &[u8; 4] = b"NXE1";
+const ENCRYPT_MAGIC: &[u8; 4] = b"NXE2";
 
 fn main() -> Result<(), NexcompError> {
     let cli = Cli::parse();
@@ -503,12 +502,12 @@ fn main() -> Result<(), NexcompError> {
 
             // Optionally encrypt
             let final_data = if let Some(password) = encrypt {
-                let key = Sha256::digest(password.as_bytes());
+                let key = password.as_bytes();
                 // Build a small header as AAD
                 let mut aad = Vec::with_capacity(8);
                 aad.extend_from_slice(ENCRYPT_MAGIC);
                 aad.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
-                let encrypted = crypto::encrypt(&compressed, &key, &aad)?;
+                let encrypted = crypto::encrypt(&compressed, key, &aad)?;
                 let mut out = aad;
                 out.extend_from_slice(&encrypted);
                 out
@@ -546,10 +545,10 @@ fn main() -> Result<(), NexcompError> {
                 let pw = decrypt.ok_or_else(|| {
                     io::Error::other("File is encrypted; provide --decrypt <password>")
                 })?;
-                let key = Sha256::digest(pw.as_bytes());
+                let key = pw.as_bytes();
                 let aad = &file_data[0..8];
                 let ciphertext = &file_data[8..];
-                crypto::decrypt(ciphertext, &key, aad)?
+                crypto::decrypt(ciphertext, key, aad)?
             } else {
                 file_data.clone()
             };
@@ -571,10 +570,10 @@ fn main() -> Result<(), NexcompError> {
                 let pw = decrypt.ok_or_else(|| {
                     io::Error::other("File is encrypted; provide --decrypt <password>")
                 })?;
-                let key = Sha256::digest(pw.as_bytes());
+                let key = pw.as_bytes();
                 let aad = &file_data[0..8];
                 let ciphertext = &file_data[8..];
-                crypto::decrypt(ciphertext, &key, aad)?
+                crypto::decrypt(ciphertext, key, aad)?
             } else {
                 file_data.clone()
             };

@@ -1,6 +1,6 @@
 // NEXCOMP — Authenticated Encryption (Stage 6)
 // Protocol: ChaCha20-Poly1305 (RFC 8439)
-// Key derivation: HKDF-SHA256(master_key, salt=random_32B, info="nexcomp-v1")
+// Key derivation: Argon2id(master_key, salt=random_32B), 19 MiB, 2 passes
 //
 // Security properties:
 //   - Confidentiality: ChaCha20 stream cipher (256-bit key, 96-bit nonce)
@@ -14,8 +14,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
-use hkdf::Hkdf;
-use sha2::Sha256;
+use argon2::Argon2;
 use thiserror::Error;
 
 /// Encryption overhead: 12B nonce + 16B Poly1305 tag = 28 bytes
@@ -23,8 +22,8 @@ pub const ENCRYPTION_OVERHEAD: usize = 12 + 16;
 
 #[derive(Error, Debug)]
 pub enum CryptoError {
-    #[error("HKDF key derivation failed")]
-    HkdfError,
+    #[error("Argon2id key derivation failed")]
+    KdfError,
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),
     #[error("Decryption failed: authentication tag mismatch")]
@@ -35,19 +34,19 @@ pub enum CryptoError {
     KeyTooShort,
 }
 
-/// Derive a 256-bit encryption key from a master key using HKDF-SHA256.
+/// Derive a 256-bit encryption key from a master key or password with Argon2id.
 ///
 /// Parameters:
-///   master_key: user-provided key material (>= 1 byte; caller should pre-hash)
+///   master_key: user-provided key material or password (>= 1 byte)
 ///   salt: 32 random bytes (stored alongside ciphertext)
-///   info: context string "nexcomp-v1"
 ///
-/// Reference: RFC 5869 — HKDF using HMAC-SHA256
+/// Argon2id with the crate defaults (19 MiB, 2 passes, 1 lane) makes every
+/// password guess cost memory-hard work, unlike a plain hash.
 fn derive_key(master_key: &[u8], salt: &[u8; 32]) -> Result<[u8; 32], CryptoError> {
-    let hk = Hkdf::<Sha256>::new(Some(salt), master_key);
     let mut okm = [0u8; 32];
-    hk.expand(b"nexcomp-v1", &mut okm)
-        .map_err(|_| CryptoError::HkdfError)?;
+    Argon2::default()
+        .hash_password_into(master_key, salt, &mut okm)
+        .map_err(|_| CryptoError::KdfError)?;
     Ok(okm)
 }
 
@@ -195,5 +194,14 @@ mod tests {
             plaintext.len() + 60,
             "Overhead should be exactly 60 bytes (32 salt + 12 nonce + 16 tag)"
         );
+    }
+
+    #[test]
+    fn test_key_derivation_is_argon2id() {
+        // Reference from libargon2 (argon2-cffi): Argon2id v19, m=19456 KiB, t=2, p=1.
+        let salt: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let key = derive_key(b"correct horse battery staple", &salt).expect("kdf ok");
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "092d6e91987840e63e2fac5e187ac5d29b489f05597971fd6554555a1a20ce2a");
     }
 }
