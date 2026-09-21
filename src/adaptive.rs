@@ -217,7 +217,9 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Result<Vec<u8>,
         CodecId::DeltaAns => {
             delta_ans::delta_ans_decode(data).map_err(|_| AdaptiveError::Decode("delta"))?
         }
-        CodecId::RleHuffman => rle_huffman::rle_huffman_decode(data),
+        CodecId::RleHuffman => {
+            rle_huffman::rle_huffman_decode_checked(data).map_err(|_| AdaptiveError::Decode("rlehuf"))?
+        }
         CodecId::BwtRans => bwt_codec::bwt_decompress(data),
         CodecId::Ppm => ppm::ppm_decompress(data),
         CodecId::Passthrough => data.to_vec(),
@@ -475,6 +477,21 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_ne!(blocks[0].codec, blocks[1].codec);
         assert_eq!(adaptive_decompress(&compressed), data);
+    }
+
+    #[test]
+    fn test_corrupt_rle_block_is_an_error_not_a_panic() {
+        let mut container = b"NX13".to_vec();
+        container.extend_from_slice(&100u64.to_le_bytes());
+        container.extend_from_slice(&1u32.to_le_bytes());
+        container.push(CodecId::RleHuffman as u8);
+        container.push(0);
+        container.extend_from_slice(&100u32.to_le_bytes());
+        container.extend_from_slice(&4u32.to_le_bytes());
+        container.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let result = std::panic::catch_unwind(|| try_adaptive_decompress(&container));
+        assert!(matches!(result, Ok(Err(_))), "corrupt RLE block must return Err");
     }
 
     #[test]
