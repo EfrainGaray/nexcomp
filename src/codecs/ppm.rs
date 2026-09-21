@@ -6,6 +6,7 @@
 
 use crate::range_coder::{RangeEncoder, RangeDecoder};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 const MAX_ORDER: usize = 5;
 
@@ -13,27 +14,25 @@ const MAX_ORDER: usize = 5;
 // Frequency table for a single context
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+/// Sparse symbol counts in first-seen order (the order defines the coding CDF).
 struct FreqTable {
-    counts: [u16; 256],
+    syms: Vec<(u8, u16)>,
     total: u32,
-    num_symbols: u16, // number of distinct symbols seen
 }
 
 impl FreqTable {
     fn new() -> Self {
         Self {
-            counts: [0; 256],
+            syms: Vec::new(),
             total: 0,
-            num_symbols: 0,
         }
     }
 
     fn update(&mut self, byte: u8) {
-        if self.counts[byte as usize] == 0 {
-            self.num_symbols += 1;
+        match self.syms.iter_mut().find(|(s, _)| *s == byte) {
+            Some((_, c)) => *c += 1,
+            None => self.syms.push((byte, 1)),
         }
-        self.counts[byte as usize] += 1;
         self.total += 1;
 
         // Rescale if total gets too large.
@@ -47,54 +46,75 @@ impl FreqTable {
 
     fn rescale(&mut self) {
         self.total = 0;
-        self.num_symbols = 0;
-        for c in self.counts.iter_mut() {
+        for (_, c) in self.syms.iter_mut() {
             *c = (*c + 1) / 2; // halve with rounding up
-            if *c > 0 {
-                self.num_symbols += 1;
-            }
             self.total += *c as u32;
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// PPM model using HashMap for context storage
+// PPM model: contexts keyed by (order, last `order` bytes) packed into a u64
 // ---------------------------------------------------------------------------
 
-/// PPM context model. Contexts are stored as byte sequences of length 0..=MAX_ORDER
-/// mapping to frequency tables.
+/// Rolling history of the last MAX_ORDER bytes plus how many are valid.
+#[derive(Clone, Copy, Default)]
+struct History {
+    bytes: u64,
+    len: usize,
+}
+
+impl History {
+    fn push(&mut self, byte: u8) {
+        self.bytes = ((self.bytes << 8) | byte as u64) & ((1 << (8 * MAX_ORDER)) - 1);
+        self.len = (self.len + 1).min(MAX_ORDER);
+    }
+
+    /// Key of the order-`order` context (order <= self.len).
+    fn key(&self, order: usize) -> u64 {
+        ((order as u64) << (8 * MAX_ORDER)) | (self.bytes & ((1u64 << (8 * order)) - 1))
+    }
+}
+
+/// Multiplicative hasher for the packed u64 context keys.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("context keys are hashed with write_u64");
+    }
+    fn write_u64(&mut self, key: u64) {
+        let h = key.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = h ^ (h >> 29);
+    }
+}
+
 struct PpmModel {
-    /// Map from context bytes -> frequency table.
-    /// Empty slice = order 0, slice of length k = order k context.
-    contexts: HashMap<Vec<u8>, FreqTable>,
+    contexts: HashMap<u64, FreqTable, BuildHasherDefault<KeyHasher>>,
 }
 
 impl PpmModel {
     fn new() -> Self {
         Self {
-            contexts: HashMap::new(),
+            contexts: HashMap::default(),
         }
     }
 
-    /// Get or create the frequency table for a given context.
-    fn get_or_create(&mut self, ctx: &[u8]) -> &mut FreqTable {
-        self.contexts.entry(ctx.to_vec()).or_insert_with(FreqTable::new)
+    fn get(&self, key: u64) -> Option<&FreqTable> {
+        self.contexts.get(&key)
     }
 
-    /// Get the frequency table for a given context (read-only).
-    fn get(&self, ctx: &[u8]) -> Option<&FreqTable> {
-        self.contexts.get(ctx)
-    }
-
-    /// Update model with observed byte at given context.
-    /// Updates all orders from 0 to min(MAX_ORDER, ctx.len()).
-    fn update(&mut self, full_ctx: &[u8], byte: u8) {
-        let max_ord = full_ctx.len().min(MAX_ORDER);
-        for order in 0..=max_ord {
-            let start = full_ctx.len() - order;
-            let ctx = &full_ctx[start..];
-            self.get_or_create(ctx).update(byte);
+    /// Update model with observed byte in every context order 0..=history.len.
+    fn update(&mut self, history: &History, byte: u8) {
+        for order in 0..=history.len {
+            self.contexts
+                .entry(history.key(order))
+                .or_insert_with(FreqTable::new)
+                .update(byte);
         }
     }
 }
@@ -111,31 +131,28 @@ impl PpmModel {
 fn encode_byte_ppm(
     enc: &mut RangeEncoder,
     model: &PpmModel,
-    full_ctx: &[u8],
+    history: &History,
     byte: u8,
 ) {
     let mut excluded = [false; 256];
-    let max_ord = full_ctx.len().min(MAX_ORDER);
 
     // Try from highest order down to 0
-    for order in (0..=max_ord).rev() {
-        let start = full_ctx.len() - order;
-        let ctx = &full_ctx[start..];
-
-        if let Some(freq) = model.get(ctx) {
-            // Compute total excluding already-excluded symbols, and the number
-            // of distinct non-excluded symbols (used as the escape weight).
+    for order in (0..=history.len).rev() {
+        if let Some(freq) = model.get(history.key(order)) {
+            // Total and distinct count over non-excluded symbols (distinct = escape
+            // weight), plus the cumulative frequency below `byte` if present.
             let mut total_excl = 0u32;
             let mut num_distinct = 0u32;
-
-            for b in 0..256usize {
-                if excluded[b] {
+            let mut found: Option<(u32, u32)> = None;
+            for &(sym, count) in &freq.syms {
+                if excluded[sym as usize] {
                     continue;
                 }
-                if freq.counts[b] > 0 {
-                    total_excl += freq.counts[b] as u32;
-                    num_distinct += 1;
+                if sym == byte {
+                    found = Some((total_excl, count as u32));
                 }
+                total_excl += count as u32;
+                num_distinct += 1;
             }
 
             // If no non-excluded symbols in this context, skip to lower order
@@ -143,27 +160,10 @@ fn encode_byte_ppm(
                 continue;
             }
 
-            let byte_count = if excluded[byte as usize] {
-                0
-            } else {
-                freq.counts[byte as usize] as u32
-            };
-
-            // Escape weight = num_distinct (Method D)
             let esc_weight = num_distinct;
             let denom = total_excl + esc_weight;
 
-            if byte_count > 0 {
-                // Encode the byte (not an escape)
-                let mut cum_low = 0u32;
-                for b in 0..byte as usize {
-                    if excluded[b] {
-                        continue;
-                    }
-                    if freq.counts[b] > 0 {
-                        cum_low += freq.counts[b] as u32;
-                    }
-                }
+            if let Some((cum_low, byte_count)) = found {
                 enc.encode_freq(cum_low, byte_count, denom);
                 return;
             }
@@ -172,10 +172,8 @@ fn encode_byte_ppm(
             enc.encode_freq(total_excl, esc_weight, denom);
 
             // Mark all symbols seen in this context as excluded
-            for b in 0..256 {
-                if freq.counts[b] > 0 {
-                    excluded[b] = true;
-                }
+            for &(sym, _) in &freq.syms {
+                excluded[sym as usize] = true;
             }
         }
         // Context not found -- implicit escape, continue to lower order
@@ -208,26 +206,18 @@ fn encode_byte_ppm(
 fn decode_byte_ppm(
     dec: &mut RangeDecoder,
     model: &PpmModel,
-    full_ctx: &[u8],
+    history: &History,
 ) -> u8 {
     let mut excluded = [false; 256];
-    let max_ord = full_ctx.len().min(MAX_ORDER);
 
     // Try from highest order down to 0
-    for order in (0..=max_ord).rev() {
-        let start = full_ctx.len() - order;
-        let ctx = &full_ctx[start..];
-
-        if let Some(freq) = model.get(ctx) {
+    for order in (0..=history.len).rev() {
+        if let Some(freq) = model.get(history.key(order)) {
             let mut total_excl = 0u32;
             let mut num_distinct = 0u32;
-
-            for b in 0..256usize {
-                if excluded[b] {
-                    continue;
-                }
-                if freq.counts[b] > 0 {
-                    total_excl += freq.counts[b] as u32;
+            for &(sym, count) in &freq.syms {
+                if !excluded[sym as usize] {
+                    total_excl += count as u32;
                     num_distinct += 1;
                 }
             }
@@ -245,32 +235,26 @@ fn decode_byte_ppm(
             if target < total_excl {
                 // It's a real symbol (not escape)
                 let mut cum = 0u32;
-                for b in 0..256usize {
-                    if excluded[b] {
+                for &(sym, count) in &freq.syms {
+                    if excluded[sym as usize] {
                         continue;
                     }
-                    let c = freq.counts[b] as u32;
-                    if c > 0 {
-                        if cum + c > target {
-                            // Found the symbol
-                            dec.decode_freq(cum, c, denom);
-                            return b as u8;
-                        }
-                        cum += c;
+                    let c = count as u32;
+                    if cum + c > target {
+                        dec.decode_freq(cum, c, denom);
+                        return sym;
                     }
+                    cum += c;
                 }
-                // Should not reach here
                 unreachable!("decode_byte_ppm: symbol not found in CDF");
-            } else {
-                // Escape
-                dec.decode_freq(total_excl, esc_weight, denom);
+            }
 
-                // Mark all symbols seen in this context as excluded
-                for b in 0..256 {
-                    if freq.counts[b] > 0 {
-                        excluded[b] = true;
-                    }
-                }
+            // Escape
+            dec.decode_freq(total_excl, esc_weight, denom);
+
+            // Mark all symbols seen in this context as excluded
+            for &(sym, _) in &freq.syms {
+                excluded[sym as usize] = true;
             }
         }
     }
@@ -299,7 +283,7 @@ pub fn ppm_compress(data: &[u8]) -> Vec<u8> {
 
     let mut model = PpmModel::new();
     let mut enc = RangeEncoder::new();
-    let mut ctx: Vec<u8> = Vec::with_capacity(MAX_ORDER + 1);
+    let mut ctx = History::default();
 
     // Write original length as header
     let mut header = (data.len() as u32).to_le_bytes().to_vec();
@@ -308,9 +292,6 @@ pub fn ppm_compress(data: &[u8]) -> Vec<u8> {
         encode_byte_ppm(&mut enc, &model, &ctx, byte);
         model.update(&ctx, byte);
         ctx.push(byte);
-        if ctx.len() > MAX_ORDER {
-            ctx.remove(0);
-        }
     }
 
     let compressed = enc.finish();
@@ -331,7 +312,7 @@ pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
 
     let mut model = PpmModel::new();
     let mut dec = RangeDecoder::new(&payload[4..]);
-    let mut ctx: Vec<u8> = Vec::with_capacity(MAX_ORDER + 1);
+    let mut ctx = History::default();
     let mut output = Vec::with_capacity(orig_len);
 
     for _ in 0..orig_len {
@@ -339,9 +320,6 @@ pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
         output.push(byte);
         model.update(&ctx, byte);
         ctx.push(byte);
-        if ctx.len() > MAX_ORDER {
-            ctx.remove(0);
-        }
     }
 
     output
