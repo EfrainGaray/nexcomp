@@ -8,7 +8,7 @@
 
 use crate::literal_coder::LiteralCoder;
 use crate::lz77::hash::HashChain;
-use crate::lz77::{Lz77Encoder, Token, MAX_CHAIN, MAX_MATCH, MAX_WINDOW, MIN_MATCH};
+use crate::lz77::{Lz77Encoder, Token, HASH_SIZE, MAX_MATCH, MAX_WINDOW, MIN_MATCH};
 use crate::lzma_state::{LzmaState, StateProbs, NUM_POS_STATES};
 use crate::range_coder::{Prob, RangeDecoder, RangeEncoder, PROB_INIT};
 
@@ -421,35 +421,84 @@ fn match_len_at(data: &[u8], pos: usize, dist: usize, max_len: usize) -> usize {
     len
 }
 
-/// Collect hash-chain matches at `pos` with strictly increasing length (nearest first).
-fn find_matches(chain: &HashChain, data: &[u8], pos: usize, max_len: usize, out: &mut Vec<(u32, usize)>) {
-    out.clear();
-    if max_len < MIN_MATCH {
-        return;
+/// Binary-tree match finder over one block (after the LZMA SDK's BT3).
+///
+/// Each position becomes the root of its 3-byte hash bucket's tree. The walk
+/// that inserts it visits candidates in suffix order, so it finds matches of
+/// strictly increasing length while touching few nodes, unlike a hash chain
+/// that must scan every recent position sharing the hash.
+struct MatchTree {
+    head: Vec<u32>,
+    /// Two children per position: smaller suffix, greater suffix.
+    son: Vec<u32>,
+}
+
+const TREE_EMPTY: u32 = u32::MAX;
+/// Nodes visited per search before the rest of the tree is dropped.
+const TREE_DEPTH: usize = 48;
+
+impl MatchTree {
+    fn new(n: usize) -> Self {
+        Self {
+            head: vec![TREE_EMPTY; HASH_SIZE],
+            son: vec![TREE_EMPTY; 2 * n],
+        }
     }
-    let h = HashChain::hash3(data[pos], data[pos + 1], data[pos + 2]);
-    let mut candidate = chain.head[h];
-    let mut best_len = MIN_MATCH - 1;
-    for _ in 0..MAX_CHAIN {
-        if candidate == u32::MAX {
-            break;
+
+    /// Insert `pos` (requires `pos + MIN_MATCH <= data.len()`). With `out`, also
+    /// collect (distance, length) matches of strictly increasing length, capped
+    /// at `NICE_LEN`.
+    fn insert(&mut self, data: &[u8], pos: usize, mut out: Option<&mut Vec<(u32, usize)>>) {
+        if let Some(out) = out.as_deref_mut() {
+            out.clear();
         }
-        let cand = candidate as usize;
-        let dist = pos - cand;
-        if dist > MAX_WINDOW {
-            break;
-        }
-        if data[cand + best_len] == data[pos + best_len] {
-            let len = match_len_at(data, pos, dist, max_len);
-            if len > best_len {
-                best_len = len;
-                out.push((dist as u32, len));
-                if len == max_len {
-                    break;
+        let len_limit = NICE_LEN.min(data.len() - pos);
+        let h = HashChain::hash3(data[pos], data[pos + 1], data[pos + 2]);
+        let mut cand = self.head[h];
+        self.head[h] = pos as u32;
+
+        // Open slots where the next smaller / greater node will hang.
+        let mut smaller_slot = 2 * pos;
+        let mut greater_slot = 2 * pos + 1;
+        let (mut smaller_len, mut greater_len) = (0, 0);
+        let mut best = MIN_MATCH - 1;
+
+        for _ in 0..TREE_DEPTH {
+            if cand == TREE_EMPTY || pos - cand as usize > MAX_WINDOW {
+                break;
+            }
+            let c = cand as usize;
+            // Every node left in this subtree shares this prefix with `pos`.
+            let mut len = smaller_len.min(greater_len);
+            while len < len_limit && data[c + len] == data[pos + len] {
+                len += 1;
+            }
+            if len > best {
+                best = len;
+                if let Some(out) = out.as_deref_mut() {
+                    out.push(((pos - c) as u32, len));
                 }
             }
+            if len == len_limit {
+                // `pos` matches `c` as far as we look: it takes over c's children.
+                self.son[smaller_slot] = self.son[2 * c];
+                self.son[greater_slot] = self.son[2 * c + 1];
+                return;
+            }
+            if data[c + len] < data[pos + len] {
+                self.son[smaller_slot] = cand;
+                smaller_slot = 2 * c + 1;
+                smaller_len = len;
+                cand = self.son[smaller_slot];
+            } else {
+                self.son[greater_slot] = cand;
+                greater_slot = 2 * c;
+                greater_len = len;
+                cand = self.son[greater_slot];
+            }
         }
-        candidate = chain.prev[cand % MAX_WINDOW];
+        self.son[smaller_slot] = TREE_EMPTY;
+        self.son[greater_slot] = TREE_EMPTY;
     }
 }
 
@@ -461,7 +510,7 @@ fn optimal_parse(data: &[u8], prices: &Prices) -> Vec<Token> {
     let mut from_len = vec![0u16; n + 1];
     let mut from_dist = vec![0u32; n + 1];
     let mut reps = vec![[1u32, 2, 3, 4]; n + 1];
-    let mut chain = HashChain::new();
+    let mut tree = MatchTree::new(n);
     let mut matches = Vec::new();
     cost[0] = 0.0;
 
@@ -509,7 +558,13 @@ fn optimal_parse(data: &[u8], prices: &Prices) -> Vec<Token> {
         }
 
         if i + MIN_MATCH <= n {
-            find_matches(&chain, data, i, max_len, &mut matches);
+            tree.insert(data, i, Some(&mut matches));
+            // The tree caps lengths at NICE_LEN; extend the longest match fully.
+            if let Some(last) = matches.last_mut() {
+                if last.1 == NICE_LEN {
+                    last.1 = match_len_at(data, i, last.0 as usize, max_len);
+                }
+            }
             let mut prev_len = MIN_MATCH - 1;
             for &(dist, len) in &matches {
                 if !r.contains(&dist) {
@@ -526,7 +581,6 @@ fn optimal_parse(data: &[u8], prices: &Prices) -> Vec<Token> {
                 }
                 prev_len = len;
             }
-            chain.insert(HashChain::hash3(data[i], data[i + 1], data[i + 2]), i as u32);
         }
 
         if longest >= NICE_LEN {
@@ -542,7 +596,7 @@ fn optimal_parse(data: &[u8], prices: &Prices) -> Vec<Token> {
             relax(&mut cost, &mut reps, to, c, longest, dist, new_reps);
             for p in i + 1..to {
                 if p + MIN_MATCH <= n {
-                    chain.insert(HashChain::hash3(data[p], data[p + 1], data[p + 2]), p as u32);
+                    tree.insert(data, p, None);
                 }
             }
             i = to;
