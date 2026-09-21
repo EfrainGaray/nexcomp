@@ -312,6 +312,7 @@ pub fn bwt_decompress(payload: &[u8]) -> Vec<u8> {
             .get(pos..pos.saturating_add(4))
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
     };
+    let original_len = read_u32(0).unwrap_or(0);
     let num_blocks = read_u32(4).unwrap_or(0);
 
     let mut output = Vec::new();
@@ -327,8 +328,13 @@ pub fn bwt_decompress(payload: &[u8]) -> Vec<u8> {
             break;
         };
         pos += compressed_len;
-        // A valid stream always has 1 <= bwt_index <= block_size <= BWT_BLOCK_SIZE.
-        if block_size > BWT_BLOCK_SIZE || bwt_index == 0 || bwt_index > block_size {
+        // A valid stream always has 1 <= bwt_index <= block_size <= BWT_BLOCK_SIZE
+        // and never decodes past its declared length.
+        if block_size > BWT_BLOCK_SIZE
+            || bwt_index == 0
+            || bwt_index > block_size
+            || output.len() + block_size > original_len
+        {
             break;
         }
 
@@ -685,6 +691,21 @@ mod tests {
         } else {
             eprintln!("No Calgary files found");
         }
+    }
+
+    #[test]
+    fn test_decompress_never_exceeds_declared_length() {
+        // Hostile payload: declares 1 byte but carries three 1000-byte block
+        // headers with empty coded data, which the CM decoder expands anyway.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        for _ in 0..3 {
+            payload.extend_from_slice(&1u32.to_le_bytes()); // bwt_index
+            payload.extend_from_slice(&1000u32.to_le_bytes()); // block_size
+            payload.extend_from_slice(&0u32.to_le_bytes()); // compressed_len
+        }
+        assert!(bwt_decompress(&payload).len() <= 1);
     }
 
     #[test]
