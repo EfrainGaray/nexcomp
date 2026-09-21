@@ -17,7 +17,7 @@ use nexcomp::classifier::DomainType;
 use nexcomp::lz77;
 
 const LEGACY_MAGIC: &[u8; 4] = b"NXC\x01";
-const ADAPTIVE_MAGIC: &[u8; 4] = b"NX12";
+const ADAPTIVE_MAGIC: &[u8; 4] = b"NX13";
 const LEGACY_VERSION: u8 = 0x01;
 const VERSION: u8 = 0x02;
 
@@ -97,7 +97,7 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
         return Vec::new();
     }
 
-    // Use the adaptive selector (output already includes "NX12" magic header)
+    // Use the adaptive selector (output already includes "NX13" magic header)
     let compressed = adaptive::adaptive_compress(data);
 
     if verbose {

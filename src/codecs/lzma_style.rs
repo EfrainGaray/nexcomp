@@ -294,53 +294,6 @@ impl LengthCoder {
 }
 
 // ---------------------------------------------------------------------------
-// Move-to-Front (MTF) transformation on literal bytes
-// ---------------------------------------------------------------------------
-
-/// Maintains a recency-ordered list of byte values.  Encoding converts a byte
-/// to its position in the list, then moves it to front.  After LZ77, remaining
-/// literals in text have strong temporal locality so the resulting positions
-/// concentrate near 0, which the range coder encodes very cheaply.
-struct MtfState {
-    list: [u8; 256],
-}
-
-impl MtfState {
-    fn new() -> Self {
-        let mut list = [0u8; 256];
-        for i in 0..256 {
-            list[i] = i as u8;
-        }
-        Self { list }
-    }
-
-    /// Convert a byte value to its MTF position (0-255) and move it to front.
-    fn encode(&mut self, byte: u8) -> u8 {
-        let pos = self.list.iter().position(|&b| b == byte).unwrap();
-        if pos > 0 {
-            let val = self.list[pos];
-            for i in (1..=pos).rev() {
-                self.list[i] = self.list[i - 1];
-            }
-            self.list[0] = val;
-        }
-        pos as u8
-    }
-
-    /// Convert an MTF position back to the original byte value and update.
-    fn decode(&mut self, pos: u8) -> u8 {
-        let byte = self.list[pos as usize];
-        if pos > 0 {
-            for i in (1..=pos as usize).rev() {
-                self.list[i] = self.list[i - 1];
-            }
-            self.list[0] = byte;
-        }
-        byte
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -390,7 +343,6 @@ pub fn encode_block(data: &[u8]) -> Vec<u8> {
     let mut dist_coder = DistanceCoder::new();
     let mut reps = [1u32, 2u32, 3u32, 4u32];
     let mut pos = 0usize;
-    let mut mtf = MtfState::new();
 
     for token in tokens {
         let pos_state = pos & 0x3;
@@ -399,13 +351,11 @@ pub fn encode_block(data: &[u8]) -> Vec<u8> {
                 enc.encode_bit(&mut probs.is_match[state.state][pos_state], 0);
                 let prev_byte = if pos == 0 { 0 } else { data[pos - 1] };
                 let ctx = LiteralCoder::context_index(pos, prev_byte);
-                // MTF: transform real byte to recency position before literal coding
-                let mtf_byte = mtf.encode(byte);
                 if state.is_literal_state() || reps[0] as usize > pos {
-                    lit.encode_literal(&mut enc, mtf_byte, ctx);
+                    lit.encode_literal(&mut enc, byte, ctx);
                 } else {
                     let match_byte = data[pos - reps[0] as usize];
-                    lit.encode_matched_literal(&mut enc, mtf_byte, match_byte, ctx);
+                    lit.encode_matched_literal(&mut enc, byte, match_byte, ctx);
                 }
                 state.update_literal();
                 pos += 1;
@@ -497,7 +447,6 @@ pub fn decode_block(payload: &[u8]) -> Result<Vec<u8>, LzmaStyleError> {
     let mut dist_coder = DistanceCoder::new();
     let mut reps = [1u32, 2u32, 3u32, 4u32];
     let mut output = Vec::with_capacity(orig_len);
-    let mut mtf = MtfState::new();
 
     while output.len() < orig_len {
         let pos_state = output.len() & 0x3;
@@ -505,14 +454,12 @@ pub fn decode_block(payload: &[u8]) -> Result<Vec<u8>, LzmaStyleError> {
         if is_match == 0 {
             let prev_byte = output.last().copied().unwrap_or(0);
             let ctx = LiteralCoder::context_index(output.len(), prev_byte);
-            let mtf_byte = if state.is_literal_state() || reps[0] as usize > output.len() {
+            let byte = if state.is_literal_state() || reps[0] as usize > output.len() {
                 lit.decode_literal(&mut dec, ctx)
             } else {
                 let match_byte = output[output.len() - reps[0] as usize];
                 lit.decode_matched_literal(&mut dec, match_byte, ctx)
             };
-            // MTF: inverse-transform position back to real byte
-            let byte = mtf.decode(mtf_byte);
             output.push(byte);
             state.update_literal();
             continue;

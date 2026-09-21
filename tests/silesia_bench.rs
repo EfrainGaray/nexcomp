@@ -38,7 +38,7 @@ fn silesia_full_benchmark() {
         let decompressed = adaptive_decompress(&compressed);
         assert_eq!(data, decompressed, "LOSSLESS FAIL: {}", f);
 
-        // Header: [4B "NX12"][4B orig_len LE][1B codec_id][1B bcj_flag][compressed_data]
+        // Header: [4B "NX13"][4B orig_len LE][1B codec_id][1B bcj_flag][compressed_data]
         let codec = CodecId::from_u8(compressed[8]);
         let bcj_flag = compressed[9] != 0;
         let nxc_size = compressed.len();

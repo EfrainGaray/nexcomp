@@ -218,11 +218,11 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Vec<u8> {
 }
 
 /// Full adaptive compress: data -> wire format
-/// Format: [4B magic "NX12"][4B orig_len LE][1B codec_id][1B bcj_flag][compressed_data]
+/// Format: [4B magic "NX13"][4B orig_len LE][1B codec_id][1B bcj_flag][compressed_data]
 pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
     let result = compress_block_adaptive(data);
     let mut out = Vec::with_capacity(10 + result.compressed.len());
-    out.extend_from_slice(b"NX12");
+    out.extend_from_slice(b"NX13");
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.push(result.codec as u8);
     out.push(if result.bcj_applied { 1 } else { 0 });
@@ -233,7 +233,7 @@ pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
 /// Full adaptive decompress: wire format -> data
 pub fn adaptive_decompress(payload: &[u8]) -> Vec<u8> {
     assert!(payload.len() >= 10, "payload too short");
-    assert_eq!(&payload[0..4], b"NX12", "bad magic");
+    assert_eq!(&payload[0..4], b"NX13", "bad magic");
     let _orig_len = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]) as usize;
     let codec = CodecId::from_u8(payload[8]);
     let bcj_applied = payload[9] != 0;
@@ -348,7 +348,7 @@ mod tests {
         let data = b"Simple text data for header format test. \
                      Adding enough content to avoid being too short.";
         let compressed = adaptive_compress(data);
-        assert_eq!(&compressed[0..4], b"NX12");
+        assert_eq!(&compressed[0..4], b"NX13");
         // Byte 8 = codec_id, Byte 9 = bcj_flag
         assert!(compressed.len() >= 10);
         // For text data, BCJ should not be applied
