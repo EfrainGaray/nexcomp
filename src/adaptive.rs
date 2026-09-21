@@ -8,6 +8,7 @@ use crate::codecs::lzma_style;
 use crate::codecs::ppm;
 use crate::codecs::rle_huffman;
 use crate::lz77::{self, huffman, Lz77Encoder};
+use rayon::prelude::*;
 
 /// Codec ID stored in the compressed block header
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,52 +75,33 @@ struct AdaptiveResult {
     bcj_applied: bool,
 }
 
+/// Encode `data` with one codec; `None` if the codec rejects the input.
+fn encode_with(codec: CodecId, data: &[u8]) -> Option<Vec<u8>> {
+    match codec {
+        CodecId::Lz77Huffman => Some(compress_baseline(data)),
+        CodecId::LzmaStyle => Some(lzma_style::encode_block(data)),
+        CodecId::DeltaAns => delta_ans::delta_ans_encode(data).ok(),
+        CodecId::RleHuffman => Some(rle_huffman::rle_huffman_encode(data)),
+        CodecId::Passthrough => Some(data.to_vec()),
+        CodecId::BwtRans => Some(bwt_codec::bwt_compress(data)),
+        CodecId::Ppm => Some(ppm::ppm_compress(data)),
+    }
+}
+
 /// Run the codec selection on `data`, returning the best compressed result.
+/// Candidates are encoded in parallel; ties keep the earlier candidate.
 fn select_best_codec(data: &[u8]) -> (Vec<u8>, CodecId) {
     let (choice, metrics) = classify_block_v2(data);
 
-    // Always compute baseline
-    let baseline = compress_baseline(data);
-    let mut best = baseline;
-    let mut best_codec = CodecId::Lz77Huffman;
-
-    // Try the classifier-suggested codec
-    let (candidate, candidate_codec) = match choice {
-        CodecChoice::DeltaAns => {
-            match delta_ans::delta_ans_encode(data) {
-                Ok(c) => (c, CodecId::DeltaAns),
-                Err(_) => (Vec::new(), CodecId::Lz77Huffman),
-            }
-        }
-        CodecChoice::RleHuffman => {
-            let c = rle_huffman::rle_huffman_encode(data);
-            (c, CodecId::RleHuffman)
-        }
-        CodecChoice::LzmaStyle => {
-            let c = lzma_style::encode_block(data);
-            (c, CodecId::LzmaStyle)
-        }
-        CodecChoice::Passthrough => {
-            (data.to_vec(), CodecId::Passthrough)
-        }
-        CodecChoice::Lz77Huffman => {
-            (Vec::new(), CodecId::Lz77Huffman)
-        }
-    };
-
-    if !candidate.is_empty() && candidate.len() < best.len() {
-        best = candidate;
-        best_codec = candidate_codec;
+    // Baseline first (no-regression guarantee), then LZMA (strong on most data)
+    let mut candidates = vec![CodecId::Lz77Huffman];
+    match choice {
+        CodecChoice::DeltaAns => candidates.push(CodecId::DeltaAns),
+        CodecChoice::RleHuffman => candidates.push(CodecId::RleHuffman),
+        CodecChoice::Passthrough => candidates.push(CodecId::Passthrough),
+        CodecChoice::LzmaStyle | CodecChoice::Lz77Huffman => {}
     }
-
-    // Also try LZMA if classifier didn't already pick it (LZMA is strong on most data)
-    if choice != CodecChoice::LzmaStyle {
-        let lzma = lzma_style::encode_block(data);
-        if lzma.len() < best.len() {
-            best = lzma;
-            best_codec = CodecId::LzmaStyle;
-        }
-    }
+    candidates.push(CodecId::LzmaStyle);
 
     // Try BWT for text-heavy data.
     // Tuned on Calgary corpus (tests/threshold_tuning.rs):
@@ -135,25 +117,31 @@ fn select_best_codec(data: &[u8]) -> (Vec<u8>, CodecId) {
     } else {
         false
     };
-
     if try_bwt {
-        let bwt = bwt_codec::bwt_compress(data);
-        if bwt.len() < best.len() {
-            best = bwt;
-            best_codec = CodecId::BwtRans;
-        }
+        candidates.push(CodecId::BwtRans);
     }
 
     // Try PPM for text-heavy blocks where it can beat BWT and LZMA
     if metrics.ascii_ratio > 0.80 && metrics.entropy < 5.5 && data.len() >= 256 {
-        let ppm_compressed = ppm::ppm_compress(data);
-        if ppm_compressed.len() < best.len() {
-            best = ppm_compressed;
-            best_codec = CodecId::Ppm;
-        }
+        candidates.push(CodecId::Ppm);
     }
 
-    (best, best_codec)
+    let encoded: Vec<Option<Vec<u8>>> = candidates
+        .par_iter()
+        .map(|&codec| encode_with(codec, data))
+        .collect();
+
+    let mut best: Option<(Vec<u8>, CodecId)> = None;
+    for (codec, out) in candidates.into_iter().zip(encoded) {
+        let Some(out) = out else { continue };
+        if out.is_empty() {
+            continue;
+        }
+        if best.as_ref().map_or(true, |(b, _)| out.len() < b.len()) {
+            best = Some((out, codec));
+        }
+    }
+    best.expect("baseline always encodes")
 }
 
 /// Compress a block adaptively with no-regression guarantee.
@@ -217,32 +205,87 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Input is split into independent blocks of this size; each picks its own codec.
+pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
+
+const FILE_HEADER_LEN: usize = 16;
+const BLOCK_HEADER_LEN: usize = 10;
+
 /// Full adaptive compress: data -> wire format
-/// Format: [4B magic "NX13"][4B orig_len LE][1B codec_id][1B bcj_flag][compressed_data]
+/// Format: [4B magic "NX13"][8B orig_len LE][4B block_count LE] then per block:
+///         [1B codec_id][1B bcj_flag][4B orig_len LE][4B comp_len LE][compressed_data]
+/// Blocks are compressed in parallel.
 pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
-    let result = compress_block_adaptive(data);
-    let mut out = Vec::with_capacity(10 + result.compressed.len());
+    let blocks: Vec<AdaptiveResult> = data
+        .par_chunks(BLOCK_SIZE)
+        .map(compress_block_adaptive)
+        .collect();
+
+    let payload_len: usize = blocks.iter().map(|b| BLOCK_HEADER_LEN + b.compressed.len()).sum();
+    let mut out = Vec::with_capacity(FILE_HEADER_LEN + payload_len);
     out.extend_from_slice(b"NX13");
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.push(result.codec as u8);
-    out.push(if result.bcj_applied { 1 } else { 0 });
-    out.extend_from_slice(&result.compressed);
+    out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+    for (block, chunk) in blocks.iter().zip(data.chunks(BLOCK_SIZE)) {
+        out.push(block.codec as u8);
+        out.push(if block.bcj_applied { 1 } else { 0 });
+        out.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(block.compressed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&block.compressed);
+    }
     out
+}
+
+/// One parsed block of the wire format.
+pub struct BlockInfo<'a> {
+    pub codec: CodecId,
+    pub bcj_applied: bool,
+    pub orig_len: usize,
+    pub data: &'a [u8],
+}
+
+/// Parse the wire format into (orig_len, blocks) without decompressing.
+pub fn parse_blocks(payload: &[u8]) -> (usize, Vec<BlockInfo<'_>>) {
+    assert!(payload.len() >= FILE_HEADER_LEN, "payload too short");
+    assert_eq!(&payload[0..4], b"NX13", "bad magic");
+    let orig_len = u64::from_le_bytes(payload[4..12].try_into().unwrap()) as usize;
+    let block_count = u32::from_le_bytes(payload[12..16].try_into().unwrap()) as usize;
+
+    let mut blocks = Vec::with_capacity(block_count);
+    let mut pos = FILE_HEADER_LEN;
+    for _ in 0..block_count {
+        assert!(payload.len() >= pos + BLOCK_HEADER_LEN, "truncated block header");
+        let codec = CodecId::from_u8(payload[pos]);
+        let bcj_applied = payload[pos + 1] != 0;
+        let block_orig = u32::from_le_bytes(payload[pos + 2..pos + 6].try_into().unwrap()) as usize;
+        let comp_len = u32::from_le_bytes(payload[pos + 6..pos + 10].try_into().unwrap()) as usize;
+        pos += BLOCK_HEADER_LEN;
+        assert!(payload.len() >= pos + comp_len, "truncated block data");
+        blocks.push(BlockInfo { codec, bcj_applied, orig_len: block_orig, data: &payload[pos..pos + comp_len] });
+        pos += comp_len;
+    }
+    (orig_len, blocks)
 }
 
 /// Full adaptive decompress: wire format -> data
 pub fn adaptive_decompress(payload: &[u8]) -> Vec<u8> {
-    assert!(payload.len() >= 10, "payload too short");
-    assert_eq!(&payload[0..4], b"NX13", "bad magic");
-    let _orig_len = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]) as usize;
-    let codec = CodecId::from_u8(payload[8]);
-    let bcj_applied = payload[9] != 0;
-    let decompressed = decompress_block_adaptive(codec, &payload[10..]);
-    if bcj_applied {
-        bcj_filter::bcj_decode(&decompressed)
-    } else {
-        decompressed
-    }
+    let (orig_len, blocks) = parse_blocks(payload);
+    let decoded: Vec<Vec<u8>> = blocks
+        .par_iter()
+        .map(|b| {
+            let decompressed = decompress_block_adaptive(b.codec, b.data);
+            let decompressed = if b.bcj_applied {
+                bcj_filter::bcj_decode(&decompressed)
+            } else {
+                decompressed
+            };
+            assert_eq!(decompressed.len(), b.orig_len, "block size mismatch");
+            decompressed
+        })
+        .collect();
+    let out = decoded.concat();
+    assert_eq!(out.len(), orig_len, "size mismatch");
+    out
 }
 
 #[cfg(test)]
@@ -349,9 +392,29 @@ mod tests {
                      Adding enough content to avoid being too short.";
         let compressed = adaptive_compress(data);
         assert_eq!(&compressed[0..4], b"NX13");
-        // Byte 8 = codec_id, Byte 9 = bcj_flag
-        assert!(compressed.len() >= 10);
+        let (orig_len, blocks) = parse_blocks(&compressed);
+        assert_eq!(orig_len, data.len());
+        assert_eq!(blocks.len(), 1);
         // For text data, BCJ should not be applied
-        assert_eq!(compressed[9], 0, "BCJ flag should be 0 for text data");
+        assert!(!blocks[0].bcj_applied, "BCJ flag should be 0 for text data");
+    }
+
+    #[test]
+    fn test_adaptive_multi_block_roundtrip() {
+        // Text then noise across a block boundary: each block must pick its own codec.
+        let mut data = b"The quick brown fox jumps over the lazy dog. ".repeat(BLOCK_SIZE / 45 + 1);
+        data.truncate(BLOCK_SIZE);
+        let mut state: u64 = 0xDEAD_BEEF;
+        data.extend((0..100_000).map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 33) as u8
+        }));
+
+        let compressed = adaptive_compress(&data);
+        let (orig_len, blocks) = parse_blocks(&compressed);
+        assert_eq!(orig_len, data.len());
+        assert_eq!(blocks.len(), 2);
+        assert_ne!(blocks[0].codec, blocks[1].codec);
+        assert_eq!(adaptive_decompress(&compressed), data);
     }
 }

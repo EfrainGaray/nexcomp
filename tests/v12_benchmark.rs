@@ -2,7 +2,7 @@
 // Selector: min(candidate_codec, lz77_huffman_baseline) per file
 // Guaranteed no regression vs v1.1
 
-use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, compress_block_adaptive_pub, CodecId};
+use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, parse_blocks, compress_block_adaptive_pub, CodecId};
 use nexcomp::classifier_v2::{classify_block_v2, BlockMetrics};
 use std::path::Path;
 use std::time::Instant;
@@ -19,7 +19,7 @@ fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f6
     let decompressed = adaptive_decompress(&compressed);
     let verify = data == decompressed;
 
-    let codec = CodecId::from_u8(compressed[8]);
+    let codec = parse_blocks(&compressed).1[0].codec;
 
     // gzip reference
     let gz_out = "/tmp/nxc_v12_bench.gz";
@@ -246,7 +246,7 @@ fn test_v12_tar_corpus() {
     assert_eq!(data, decompressed, "Tar round-trip FAILED");
 
     let bpb = compressed.len() as f64 * 8.0 / data.len() as f64;
-    let codec = CodecId::from_u8(compressed[8]);
+    let codec = parse_blocks(&compressed).1[0].codec;
     eprintln!("\nTar corpus: {} bytes, {:.3} bpb, codec={}", compressed.len(), bpb, codec.name());
     assert!(bpb <= 1.211, "Tar regression: {:.3} > 1.211", bpb);
 }

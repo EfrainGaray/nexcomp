@@ -456,6 +456,7 @@ dependencies = [
  "criterion",
  "hkdf",
  "rand",
+ "rayon",
  "sha2",
  "thiserror",
 ]

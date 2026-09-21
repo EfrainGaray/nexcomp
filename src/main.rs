@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use thiserror::Error;
 
-use nexcomp::adaptive::{self, CodecId};
+use nexcomp::adaptive;
 use nexcomp::classifier_v2::CodecChoice;
 use nexcomp::crypto;
 use nexcomp::entropy::{
@@ -102,10 +102,9 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
 
     if verbose {
         let bpb = compressed.len() as f64 * 8.0 / data.len() as f64;
-        let codec = CodecId::from_u8(compressed[8]);
         eprintln!(
             "  codec={} {:.3} bpb ({} -> {} bytes, {:.1}% ratio)",
-            codec.name(),
+            codec_summary(&compressed),
             bpb,
             data.len(),
             compressed.len(),
@@ -114,6 +113,21 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     }
 
     compressed
+}
+
+/// Codec name if every block agrees, otherwise `Mixed(a+b)` in first-seen order.
+fn codec_summary(compressed: &[u8]) -> String {
+    let (_, blocks) = adaptive::parse_blocks(compressed);
+    let mut names: Vec<&'static str> = Vec::new();
+    for block in &blocks {
+        if !names.contains(&block.codec.name()) {
+            names.push(block.codec.name());
+        }
+    }
+    match names.as_slice() {
+        [single] => single.to_string(),
+        _ => format!("Mixed({})", names.join("+")),
+    }
 }
 
 fn decompress_data(data: &[u8]) -> Result<Vec<u8>, NexcompError> {
@@ -580,21 +594,13 @@ fn main() -> Result<(), NexcompError> {
 
             if payload.len() >= 4 && &payload[0..4] == ADAPTIVE_MAGIC {
                 // New adaptive format
-                let codec = if payload.len() >= 9 {
-                    CodecId::from_u8(payload[8])
-                } else {
-                    CodecId::Passthrough
-                };
-                let orig_len = if payload.len() >= 8 {
-                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]) as usize
-                } else {
-                    0
-                };
+                let (orig_len, _) = adaptive::parse_blocks(&payload);
+                let codec = codec_summary(&payload);
 
                 if show_codec {
-                    println!("{}", codec.name());
+                    println!("{codec}");
                 } else {
-                    println!("version=1.2 size={} codec={}", orig_len, codec.name());
+                    println!("version=1.3 size={orig_len} codec={codec}");
                 }
             } else if payload.len() >= 4 && &payload[0..4] == LEGACY_MAGIC {
                 // Legacy format — use the old inspect path

@@ -597,11 +597,11 @@ fn qa_wire_format_invalid_codec() {
     let data = b"Test data for codec ID validation.";
     let mut compressed = adaptive_compress(data);
 
-    // codec_id is at offset 8
-    let original_codec_id = compressed[8];
+    // codec_id of the first block is at offset 16
+    let original_codec_id = compressed[16];
 
     // Test with codec_id = 255 (invalid — should map to Passthrough via from_u8)
-    compressed[8] = 255;
+    compressed[16] = 255;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         adaptive_decompress(&compressed)
     }));
@@ -617,12 +617,12 @@ fn qa_wire_format_invalid_codec() {
     }
 
     // Restore and verify original still works
-    compressed[8] = original_codec_id;
+    compressed[16] = original_codec_id;
     let decompressed = adaptive_decompress(&compressed);
     assert_eq!(&data[..], &decompressed[..]);
 
     // Test: codec_id = 6 (Ppm) — from_u8(6) maps to Passthrough (BUG)
-    compressed[8] = 6;
+    compressed[16] = 6;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         adaptive_decompress(&compressed)
     }));
@@ -883,9 +883,9 @@ fn qa_no_checksum_verification() {
     let data = b"This is important data that should be verified. ".repeat(20);
     let mut compressed = adaptive_compress(&data);
 
-    // Corrupt a byte in the compressed payload (after the 10-byte header)
-    if compressed.len() > 15 {
-        compressed[12] ^= 0xFF; // flip bits in compressed data
+    // Corrupt a byte in the compressed payload (after file + block headers)
+    if compressed.len() > 30 {
+        compressed[28] ^= 0xFF; // flip bits in compressed data
     }
 
     // Try decompressing — it will likely produce garbage without crashing

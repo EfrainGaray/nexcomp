@@ -2,7 +2,7 @@
 // Compares NEXCOMP against 9 external compressors on multiple standard corpora.
 // Run: cargo test --release --test professional_bench -- --ignored --nocapture
 
-use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, CodecId};
+use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, parse_blocks};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -99,7 +99,7 @@ fn bench_nexcomp(data: &[u8]) -> CompressorResult {
     let decomp_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let lossless = data == decompressed.as_slice();
-    let codec = CodecId::from_u8(compressed[8]);
+    let codec = parse_blocks(&compressed).1[0].codec;
 
     CompressorResult {
         name: format!("NEXCOMP({})", codec.name()),
