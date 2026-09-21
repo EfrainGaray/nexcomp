@@ -15,8 +15,8 @@ pub enum Token {
 pub const MAX_WINDOW: usize = 4 * 1024 * 1024; // 4MB sliding window
 pub const MAX_MATCH: usize = 258;
 pub const MIN_MATCH: usize = 3;
-pub const HASH_BITS: usize = 16;
-pub const HASH_SIZE: usize = 1 << HASH_BITS; // 65536
+pub const HASH_BITS: usize = 18;
+pub const HASH_SIZE: usize = 1 << HASH_BITS;
 pub const HASH_MASK: usize = HASH_SIZE - 1;
 pub const MAX_CHAIN: usize = 256; // max hash chain depth
 

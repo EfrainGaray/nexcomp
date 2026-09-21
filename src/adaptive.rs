@@ -174,14 +174,14 @@ fn compress_block_adaptive(data: &[u8]) -> AdaptiveResult {
         };
     }
 
-    // Compress without BCJ
-    let (best_plain, best_plain_codec) = select_best_codec(data);
-
-    // Try BCJ pre-filter for binary data that looks like x86 code
+    // Try BCJ pre-filter for binary data that looks like x86 code, in parallel with the plain path
     let (_, metrics) = classify_block_v2(data);
-    if metrics.ascii_ratio <= 0.70 && bcj_filter::is_likely_x86(data) {
-        let filtered = bcj_filter::bcj_encode(data);
-        let (best_bcj, best_bcj_codec) = select_best_codec(&filtered);
+    let try_bcj = metrics.ascii_ratio <= 0.70 && bcj_filter::is_likely_x86(data);
+    let ((best_plain, best_plain_codec), bcj) = rayon::join(
+        || select_best_codec(data),
+        || try_bcj.then(|| select_best_codec(&bcj_filter::bcj_encode(data))),
+    );
+    if let Some((best_bcj, best_bcj_codec)) = bcj {
         if best_bcj.len() < best_plain.len() {
             return AdaptiveResult {
                 compressed: best_bcj,
