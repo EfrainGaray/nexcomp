@@ -39,8 +39,8 @@ fn silesia_full_benchmark() {
         assert_eq!(data, decompressed, "LOSSLESS FAIL: {}", f);
 
         // Report codec and BCJ flag of the first block
-        let codec = parse_blocks(&compressed).1[0].codec;
-        let bcj_flag = parse_blocks(&compressed).1[0].bcj_applied;
+        let codec = parse_blocks(&compressed).unwrap().1[0].codec;
+        let bcj_flag = parse_blocks(&compressed).unwrap().1[0].bcj_applied;
         let nxc_size = compressed.len();
 
         // bzip2

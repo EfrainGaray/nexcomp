@@ -19,7 +19,7 @@ fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f6
     let decompressed = adaptive_decompress(&compressed);
     let verify = data == decompressed;
 
-    let codec = parse_blocks(&compressed).1[0].codec;
+    let codec = parse_blocks(&compressed).unwrap().1[0].codec;
 
     // gzip reference
     let gz_out = "/tmp/nxc_v12_bench.gz";
@@ -246,7 +246,7 @@ fn test_v12_tar_corpus() {
     assert_eq!(data, decompressed, "Tar round-trip FAILED");
 
     let bpb = compressed.len() as f64 * 8.0 / data.len() as f64;
-    let codec = parse_blocks(&compressed).1[0].codec;
+    let codec = parse_blocks(&compressed).unwrap().1[0].codec;
     eprintln!("\nTar corpus: {} bytes, {:.3} bpb, codec={}", compressed.len(), bpb, codec.name());
     assert!(bpb <= 1.211, "Tar regression: {:.3} > 1.211", bpb);
 }

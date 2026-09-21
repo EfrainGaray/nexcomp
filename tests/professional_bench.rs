@@ -99,7 +99,7 @@ fn bench_nexcomp(data: &[u8]) -> CompressorResult {
     let decomp_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let lossless = data == decompressed.as_slice();
-    let codec = parse_blocks(&compressed).1[0].codec;
+    let codec = parse_blocks(&compressed).unwrap().1[0].codec;
 
     CompressorResult {
         name: format!("NEXCOMP({})", codec.name()),

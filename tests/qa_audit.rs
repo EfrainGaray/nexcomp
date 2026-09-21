@@ -721,24 +721,22 @@ fn qa_codec_individual_roundtrips() {
 
 #[test]
 fn qa_codec_id_from_u8() {
-    // Verify all valid codec IDs round-trip through from_u8
-    assert_eq!(CodecId::from_u8(0), CodecId::Lz77Huffman);
-    assert_eq!(CodecId::from_u8(1), CodecId::LzmaStyle);
-    assert_eq!(CodecId::from_u8(2), CodecId::DeltaAns);
-    assert_eq!(CodecId::from_u8(3), CodecId::RleHuffman);
-    // Note: from_u8(4) should be Passthrough but let's verify
-    assert_eq!(CodecId::from_u8(4), CodecId::Passthrough);
-    assert_eq!(CodecId::from_u8(5), CodecId::BwtRans);
+    // Every valid codec ID round-trips through from_u8
+    for codec in [
+        CodecId::Lz77Huffman,
+        CodecId::LzmaStyle,
+        CodecId::DeltaAns,
+        CodecId::RleHuffman,
+        CodecId::Passthrough,
+        CodecId::BwtRans,
+        CodecId::Ppm,
+    ] {
+        assert_eq!(CodecId::from_u8(codec as u8), Some(codec));
+    }
 
-    // Verify from_u8(6) correctly maps to Ppm
-    let codec6 = CodecId::from_u8(6);
-    assert_eq!(codec6, CodecId::Ppm, "CodecId 6 should be Ppm");
-
-    // Verify unknown IDs (7, 255, etc.) map to Passthrough
-    assert_eq!(CodecId::from_u8(7), CodecId::Passthrough, "Unknown ID 7 should be Passthrough");
-    assert_eq!(CodecId::from_u8(255), CodecId::Passthrough, "Unknown ID 255 should be Passthrough");
-    // Note: from_u8(4) is Passthrough per the catch-all, not an explicit arm
-    // This is correct behavior — 4 = Passthrough via the default arm
+    // Unknown IDs are rejected instead of silently mapping to Passthrough
+    assert_eq!(CodecId::from_u8(7), None);
+    assert_eq!(CodecId::from_u8(255), None);
 }
 
 // ============================================================================
@@ -747,46 +745,15 @@ fn qa_codec_id_from_u8() {
 
 #[test]
 fn qa_decompress_fallback_behavior() {
-    // BUG: When LZMA or DeltaANS decode fails, decompress_block_adaptive
-    // falls back to decompress_baseline, which will produce garbage.
-    // This is a silent data corruption bug.
-
-    // Craft invalid LZMA payload
+    // A failed LZMA or DeltaANS decode must surface as an error, never as a
+    // silent fallback to the baseline decoder.
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        decompress_block_adaptive(CodecId::LzmaStyle, &garbage)
-    }));
-
-    // It should either error or return garbage — but NOT panic
-    // The current behavior is to fall back to baseline decoder which
-    // will try to decode the garbage as LZ77+Huffman
-    match result {
-        Ok(data) => {
-            // Got some data back — this is the fallback behavior (potential silent corruption)
-            eprintln!(
-                "WARNING: LZMA fallback produced {} bytes of potentially corrupt data",
-                data.len()
-            );
-        }
-        Err(_) => {
-            // Panicked — also problematic but at least not silent corruption
-            eprintln!("LZMA fallback panicked on invalid data");
-        }
-    }
-
-    // Same test for DeltaANS
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        decompress_block_adaptive(CodecId::DeltaAns, &garbage)
-    }));
-    match result {
-        Ok(data) => {
-            eprintln!(
-                "WARNING: DeltaANS fallback produced {} bytes of potentially corrupt data",
-                data.len()
-            );
-        }
-        Err(_) => {
-            eprintln!("DeltaANS fallback panicked on invalid data");
+    for codec in [CodecId::LzmaStyle, CodecId::DeltaAns] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decompress_block_adaptive(codec, &garbage)
+        }));
+        if let Ok(decoded) = result {
+            assert!(decoded.is_err(), "{} decoded garbage without error", codec.name());
         }
     }
 }
