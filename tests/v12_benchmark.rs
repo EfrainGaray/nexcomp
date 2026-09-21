@@ -2,7 +2,7 @@
 // Selector: min(candidate_codec, lz77_huffman_baseline) per file
 // Guaranteed no regression vs v1.1
 
-use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, parse_blocks, compress_block_adaptive_pub, CodecId};
+use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, codec_summary, compress_block_adaptive_pub};
 use nexcomp::classifier_v2::{classify_block_v2, BlockMetrics};
 use std::path::Path;
 use std::time::Instant;
@@ -19,7 +19,7 @@ fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f6
     let decompressed = adaptive_decompress(&compressed);
     let verify = data == decompressed;
 
-    let codec = parse_blocks(&compressed).unwrap().1[0].codec;
+    let codec = codec_summary(&compressed).unwrap();
 
     // gzip reference
     let gz_out = "/tmp/nxc_v12_bench.gz";
@@ -42,7 +42,7 @@ fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f6
     let bz_bpb = bz_size as f64 * 8.0 / orig as f64;
 
     Some((name, orig, compressed.len(), gz_size, bz_size, nxc_bpb, gz_bpb, bz_bpb, verify,
-          codec.name().to_string(), comp_time))
+          codec, comp_time))
 }
 
 fn run_corpus(corpus_name: &str, dir: &str, files: &[&str]) {
@@ -246,7 +246,7 @@ fn test_v12_tar_corpus() {
     assert_eq!(data, decompressed, "Tar round-trip FAILED");
 
     let bpb = compressed.len() as f64 * 8.0 / data.len() as f64;
-    let codec = parse_blocks(&compressed).unwrap().1[0].codec;
-    eprintln!("\nTar corpus: {} bytes, {:.3} bpb, codec={}", compressed.len(), bpb, codec.name());
+    let codec = codec_summary(&compressed).unwrap();
+    eprintln!("\nTar corpus: {} bytes, {:.3} bpb, codec={}", compressed.len(), bpb, codec);
     assert!(bpb <= 1.211, "Tar regression: {:.3} > 1.211", bpb);
 }

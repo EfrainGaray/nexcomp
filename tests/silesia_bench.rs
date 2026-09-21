@@ -1,4 +1,4 @@
-use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, parse_blocks, CodecId};
+use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, codec_summary, parse_blocks};
 use std::path::Path;
 
 const SILESIA_DIR: &str = "/tmp/nexcomp_corpora/silesia";
@@ -38,9 +38,9 @@ fn silesia_full_benchmark() {
         let decompressed = adaptive_decompress(&compressed);
         assert_eq!(data, decompressed, "LOSSLESS FAIL: {}", f);
 
-        // Report codec and BCJ flag of the first block
-        let codec = parse_blocks(&compressed).unwrap().1[0].codec;
-        let bcj_flag = parse_blocks(&compressed).unwrap().1[0].bcj_applied;
+        // Codec summary across blocks, BCJ if any block used it
+        let codec = codec_summary(&compressed).unwrap();
+        let bcj_flag = parse_blocks(&compressed).unwrap().1.iter().any(|b| b.bcj_applied);
         let nxc_size = compressed.len();
 
         // bzip2
@@ -65,7 +65,7 @@ fn silesia_full_benchmark() {
 
         eprintln!("{:<12} {:>10} {:>10} {:>6.3} {:>10} {:>6.3} {:>10} {:>6.3} {:>7} {:>4} {:>+7.3} {:>+7.3}",
             f, orig, nxc_size, nxc_bpb, bz_size, bz_bpb, br_size, br_bpb,
-            codec.name(), bcj_str, nxc_bpb - bz_bpb, nxc_bpb - br_bpb);
+            codec, bcj_str, nxc_bpb - bz_bpb, nxc_bpb - br_bpb);
 
         tot_orig += orig;
         tot_nxc += nxc_size;

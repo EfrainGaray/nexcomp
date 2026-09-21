@@ -304,6 +304,21 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
     Ok((orig_len, blocks))
 }
 
+/// Codec name if every block agrees, otherwise `Mixed(a+b)` in first-seen order.
+pub fn codec_summary(compressed: &[u8]) -> Result<String, AdaptiveError> {
+    let (_, blocks) = parse_blocks(compressed)?;
+    let mut names: Vec<&'static str> = Vec::new();
+    for block in &blocks {
+        if !names.contains(&block.codec.name()) {
+            names.push(block.codec.name());
+        }
+    }
+    Ok(match names.as_slice() {
+        [single] => single.to_string(),
+        _ => format!("Mixed({})", names.join("+")),
+    })
+}
+
 /// Full adaptive decompress: wire format -> data
 pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError> {
     let (orig_len, blocks) = parse_blocks(payload)?;

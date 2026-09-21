@@ -106,7 +106,7 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
         let bpb = compressed.len() as f64 * 8.0 / data.len() as f64;
         eprintln!(
             "  codec={} {:.3} bpb ({} -> {} bytes, {:.1}% ratio)",
-            codec_summary(&compressed).expect("freshly written container parses"),
+            adaptive::codec_summary(&compressed).expect("freshly written container parses"),
             bpb,
             data.len(),
             compressed.len(),
@@ -115,21 +115,6 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     }
 
     compressed
-}
-
-/// Codec name if every block agrees, otherwise `Mixed(a+b)` in first-seen order.
-fn codec_summary(compressed: &[u8]) -> Result<String, adaptive::AdaptiveError> {
-    let (_, blocks) = adaptive::parse_blocks(compressed)?;
-    let mut names: Vec<&'static str> = Vec::new();
-    for block in &blocks {
-        if !names.contains(&block.codec.name()) {
-            names.push(block.codec.name());
-        }
-    }
-    Ok(match names.as_slice() {
-        [single] => single.to_string(),
-        _ => format!("Mixed({})", names.join("+")),
-    })
 }
 
 fn decompress_data(data: &[u8]) -> Result<Vec<u8>, NexcompError> {
@@ -597,7 +582,7 @@ fn main() -> Result<(), NexcompError> {
             if payload.len() >= 4 && &payload[0..4] == ADAPTIVE_MAGIC {
                 // New adaptive format
                 let (orig_len, _) = adaptive::parse_blocks(&payload)?;
-                let codec = codec_summary(&payload)?;
+                let codec = adaptive::codec_summary(&payload)?;
 
                 if show_codec {
                     println!("{codec}");
