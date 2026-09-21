@@ -4,6 +4,7 @@
 //! specialized codecs (RLE) for zero-heavy and low-entropy blocks.
 
 pub mod bcj_filter;
+mod bwt_cm;
 pub mod bwt_codec;
 pub mod delta_ans;
 pub mod lzma_style;
