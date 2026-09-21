@@ -248,12 +248,11 @@ fn sais_core(text: &[usize], alphabet_size: usize) -> Vec<usize> {
     sa
 }
 
-/// Compute BWT using SA-IS suffix array on doubled text with sentinel.
+/// Compute the BWT of `data ++ sentinel` from its SA-IS suffix array.
 ///
-/// To correctly sort circular rotations, we use the doubled-text approach:
-/// construct `data ++ data ++ sentinel`, compute suffix array, and keep
-/// only entries in [0, n). This ensures circular rotations are compared
-/// correctly even when repeated patterns exist.
+/// Rows are the n + 1 sorted suffixes; row 0 is the sentinel suffix. The
+/// sentinel itself is not emitted: the returned index is the row where it
+/// would sit (the row of suffix 0), so the output has exactly n bytes.
 ///
 /// Complexity: O(n) time and space.
 fn bwt_forward(data: &[u8]) -> (Vec<u8>, u32) {
@@ -262,30 +261,14 @@ fn bwt_forward(data: &[u8]) -> (Vec<u8>, u32) {
         return (Vec::new(), 0);
     }
 
-    // Build doubled text with sentinel: data ++ data ++ $ (length 2n + 1)
-    // Shift all bytes by +1 so sentinel (0) is smallest.
-    let mut text: Vec<usize> = Vec::with_capacity(2 * n + 1);
-    for &b in data {
-        text.push(b as usize + 1);
-    }
-    for &b in data {
-        text.push(b as usize + 1);
-    }
-    text.push(0); // sentinel
+    let sa = suffix_array_sais(data);
 
-    let sa = sais_core(&text, 257);
-
-    // Extract BWT: only consider SA entries in [0, n) — these are the
-    // n circular rotations. For each, the last column char is data[(s + n - 1) % n].
     let mut bwt = Vec::with_capacity(n);
+    bwt.push(data[n - 1]); // row 0: char preceding the sentinel
     let mut index = 0u32;
-    for &s in &sa {
-        if s >= n {
-            continue; // skip sentinel and second-half entries
-        }
+    for (k, &s) in sa.iter().enumerate() {
         if s == 0 {
-            index = bwt.len() as u32;
-            bwt.push(data[n - 1]);
+            index = k as u32 + 1;
         } else {
             bwt.push(data[s - 1]);
         }
@@ -293,42 +276,40 @@ fn bwt_forward(data: &[u8]) -> (Vec<u8>, u32) {
     (bwt, index)
 }
 
-/// Inverse BWT using the LF-mapping.
+/// Inverse BWT using the LF-mapping (see `bwt_forward` for the row layout).
 fn bwt_inverse(transformed: &[u8], index: u32) -> Vec<u8> {
     let n = transformed.len();
     if n == 0 {
         return Vec::new();
     }
 
-    // Count occurrences of each byte.
-    let mut counts = [0usize; 256];
+    // First row of each byte in the sorted first column (row 0 is the sentinel).
+    let mut counts = [0u32; 256];
     for &b in transformed {
         counts[b as usize] += 1;
     }
-
-    // Cumulative counts.
-    let mut cumul = [0usize; 256];
-    let mut sum = 0usize;
+    let mut running = [0u32; 256];
+    let mut sum = 1u32;
     for i in 0..256 {
-        cumul[i] = sum;
+        running[i] = sum;
         sum += counts[i];
     }
 
-    // Build LF-mapping.
-    let mut lf = vec![0usize; n];
-    let mut running = cumul;
-    for i in 0..n {
-        let b = transformed[i] as usize;
-        lf[i] = running[b];
-        running[b] += 1;
+    // lf[j] = row reached from stored position j.
+    let mut lf = vec![0u32; n];
+    for (j, &b) in transformed.iter().enumerate() {
+        lf[j] = running[b as usize];
+        running[b as usize] += 1;
     }
 
-    // Reconstruct original.
+    // Walk backwards from the sentinel row; rows past `index` are stored one slot earlier.
+    let index = index as usize;
     let mut result = vec![0u8; n];
-    let mut pos = index as usize;
+    let mut row = 0usize;
     for i in (0..n).rev() {
-        result[i] = transformed[pos];
-        pos = lf[pos];
+        let j = if row < index { row } else { row - 1 };
+        result[i] = transformed[j];
+        row = lf[j] as usize;
     }
 
     result
@@ -649,39 +630,36 @@ const VERSION_RANS: u8 = 0x00;
 /// Version flag: multi-tree Huffman encoding
 const VERSION_MULTI_HUFFMAN: u8 = 0x01;
 
-/// Compute histogram for a group of symbols.
-fn group_histogram(symbols: &[u16], start: usize, end: usize, num_symbols: usize) -> Vec<u32> {
-    let mut hist = vec![0u32; num_symbols];
-    for &s in &symbols[start..end] {
-        hist[s as usize] += 1;
-    }
-    hist
+/// Estimate encoding cost of a group using a set of Huffman codes.
+fn estimate_group_cost(group: &[u16], codes: &[HuffCode]) -> usize {
+    group
+        .iter()
+        .map(|&sym| match codes.get(sym as usize) {
+            Some(code) if code.len > 0 => code.len as usize,
+            _ => 15, // max code length as penalty for missing symbols
+        })
+        .sum()
 }
 
-/// Estimate encoding cost of a group using a set of Huffman codes.
-fn estimate_group_cost(group_hist: &[u32], codes: &[HuffCode]) -> usize {
-    let mut cost = 0usize;
-    for (sym, &count) in group_hist.iter().enumerate() {
-        if count > 0 {
-            let len = if sym < codes.len() && codes[sym].len > 0 {
-                codes[sym].len as usize
-            } else {
-                15 // max code length as penalty for missing symbols
-            };
-            cost += count as usize * len;
+/// Sum the symbol histograms of the groups assigned to each tree.
+fn tree_histograms(groups: &[&[u16]], assignments: &[usize], num_trees: usize, num_symbols: usize) -> Vec<Vec<u32>> {
+    let mut tree_hists = vec![vec![0u32; num_symbols]; num_trees];
+    for (group, &t) in groups.iter().zip(assignments) {
+        for &sym in group.iter() {
+            tree_hists[t][sym as usize] += 1;
         }
     }
-    cost
+    tree_hists
 }
 
 /// Assign groups to trees using iterative refinement (simplified K-means).
 /// Returns (assignments, tree_histograms).
 fn assign_groups_to_trees(
-    group_hists: &[Vec<u32>],
+    groups: &[&[u16]],
     num_trees: usize,
     num_symbols: usize,
 ) -> (Vec<usize>, Vec<Vec<u32>>) {
-    let num_groups = group_hists.len();
+    let num_groups = groups.len();
 
     // Initial assignment: distribute groups evenly across trees
     let mut assignments: Vec<usize> = (0..num_groups)
@@ -691,12 +669,7 @@ fn assign_groups_to_trees(
     // Iterate: compute tree histograms, reassign groups to cheapest tree
     for _iter in 0..10 {
         // Build tree histograms from assignments
-        let mut tree_hists = vec![vec![0u32; num_symbols]; num_trees];
-        for (g, &t) in assignments.iter().enumerate() {
-            for s in 0..num_symbols {
-                tree_hists[t][s] += group_hists[g][s];
-            }
-        }
+        let tree_hists = tree_histograms(groups, &assignments, num_trees, num_symbols);
 
         // Build Huffman codes for each tree
         let tree_codes: Vec<Vec<HuffCode>> = tree_hists
@@ -710,7 +683,7 @@ fn assign_groups_to_trees(
             let mut best_tree = assignments[g];
             let mut best_cost = usize::MAX;
             for t in 0..num_trees {
-                let cost = estimate_group_cost(&group_hists[g], &tree_codes[t]);
+                let cost = estimate_group_cost(groups[g], &tree_codes[t]);
                 if cost < best_cost {
                     best_cost = cost;
                     best_tree = t;
@@ -728,30 +701,25 @@ fn assign_groups_to_trees(
     }
 
     // Final tree histograms
-    let mut tree_hists = vec![vec![0u32; num_symbols]; num_trees];
-    for (g, &t) in assignments.iter().enumerate() {
-        for s in 0..num_symbols {
-            tree_hists[t][s] += group_hists[g][s];
-        }
-    }
+    let tree_hists = tree_histograms(groups, &assignments, num_trees, num_symbols);
 
     (assignments, tree_hists)
 }
 
 /// Choose optimal number of trees (2-6) by estimated total cost.
-fn choose_num_trees(group_hists: &[Vec<u32>], num_symbols: usize) -> usize {
-    if group_hists.len() <= 1 {
+fn choose_num_trees(groups: &[&[u16]], num_symbols: usize) -> usize {
+    if groups.len() <= 1 {
         return 1;
     }
 
-    let max_k = MAX_TREES.min(group_hists.len());
+    let max_k = MAX_TREES.min(groups.len());
     let mut best_k = 1;
     let mut best_total = usize::MAX;
 
     // Also evaluate k=1 (single tree)
     for k in 1..=max_k {
         let (assignments, tree_hists) =
-            assign_groups_to_trees(group_hists, k, num_symbols);
+            assign_groups_to_trees(groups, k, num_symbols);
         let tree_codes: Vec<Vec<HuffCode>> = tree_hists
             .iter()
             .map(|h| build_huffman_codes(h, num_symbols))
@@ -760,12 +728,12 @@ fn choose_num_trees(group_hists: &[Vec<u32>], num_symbols: usize) -> usize {
         // Total cost = encoded data + tree headers + selectors
         let mut data_bits = 0usize;
         for (g, &t) in assignments.iter().enumerate() {
-            data_bits += estimate_group_cost(&group_hists[g], &tree_codes[t]);
+            data_bits += estimate_group_cost(groups[g], &tree_codes[t]);
         }
         let header_bits = k * num_symbols * 5; // ~5 bits per code length
         let selector_bits = if k > 1 {
             let sel_bits = if k <= 2 { 1 } else if k <= 4 { 2 } else { 3 };
-            group_hists.len() * sel_bits
+            groups.len() * sel_bits
         } else {
             0
         };
@@ -803,19 +771,12 @@ fn multi_tree_encode(symbols: &[u16], max_symbol: usize) -> Vec<u8> {
         return writer.finish();
     }
 
-    // Compute per-group histograms
-    let group_hists: Vec<Vec<u32>> = (0..num_groups)
-        .map(|g| {
-            let start = g * GROUP_SIZE;
-            let end = (start + GROUP_SIZE).min(symbols.len());
-            group_histogram(symbols, start, end, num_symbols)
-        })
-        .collect();
+    let groups: Vec<&[u16]> = symbols.chunks(GROUP_SIZE).collect();
 
     // Choose number of trees and assign groups
-    let num_trees = choose_num_trees(&group_hists, num_symbols);
+    let num_trees = choose_num_trees(&groups, num_symbols);
     let (assignments, tree_hists) =
-        assign_groups_to_trees(&group_hists, num_trees, num_symbols);
+        assign_groups_to_trees(&groups, num_trees, num_symbols);
 
     // Build final Huffman codes
     let tree_codes: Vec<Vec<HuffCode>> = tree_hists
