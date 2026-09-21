@@ -108,9 +108,10 @@ impl PpmModel {
         self.contexts.get(&key)
     }
 
-    /// Update model with observed byte in every context order 0..=history.len.
-    fn update(&mut self, history: &History, byte: u8) {
-        for order in 0..=history.len {
+    /// Update model with observed byte in orders `from_order..=history.len`
+    /// (update exclusion: orders below the one that coded the byte are left alone).
+    fn update(&mut self, history: &History, byte: u8, from_order: usize) {
+        for order in from_order..=history.len {
             self.contexts
                 .entry(history.key(order))
                 .or_insert_with(FreqTable::new)
@@ -123,7 +124,7 @@ impl PpmModel {
 // PPM encode/decode helpers
 // ---------------------------------------------------------------------------
 
-/// Encode a single byte using PPM with exclusion (Method D escape).
+/// Encode a single byte using PPM with exclusion; returns the order that coded it.
 ///
 /// Method D: escape weight = number of distinct symbols seen in this context
 /// (excluding already-excluded symbols). This gives a tighter escape estimate
@@ -133,7 +134,7 @@ fn encode_byte_ppm(
     model: &PpmModel,
     history: &History,
     byte: u8,
-) {
+) -> usize {
     let mut excluded = [false; 256];
 
     // Try from highest order down to 0
@@ -165,7 +166,7 @@ fn encode_byte_ppm(
 
             if let Some((cum_low, byte_count)) = found {
                 enc.encode_freq(cum_low, byte_count, denom);
-                return;
+                return order;
             }
 
             // Byte not found in this context -- encode escape
@@ -200,6 +201,7 @@ fn encode_byte_ppm(
         "all symbols excluded, cannot encode"
     );
     enc.encode_freq(cum_low, 1, non_excluded_count);
+    0
 }
 
 /// Decode a single byte using PPM with exclusion (Method D escape).
@@ -207,7 +209,7 @@ fn decode_byte_ppm(
     dec: &mut RangeDecoder,
     model: &PpmModel,
     history: &History,
-) -> u8 {
+) -> (u8, usize) {
     let mut excluded = [false; 256];
 
     // Try from highest order down to 0
@@ -242,7 +244,7 @@ fn decode_byte_ppm(
                     let c = count as u32;
                     if cum + c > target {
                         dec.decode_freq(cum, c, denom);
-                        return sym;
+                        return (sym, order);
                     }
                     cum += c;
                 }
@@ -266,7 +268,7 @@ fn decode_byte_ppm(
     let target = dec.get_freq(count);
     let byte = non_excluded[target as usize];
     dec.decode_freq(target, 1, count);
-    byte
+    (byte, 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +291,8 @@ pub fn ppm_compress(data: &[u8]) -> Vec<u8> {
     let mut header = (data.len() as u32).to_le_bytes().to_vec();
 
     for &byte in data {
-        encode_byte_ppm(&mut enc, &model, &ctx, byte);
-        model.update(&ctx, byte);
+        let order = encode_byte_ppm(&mut enc, &model, &ctx, byte);
+        model.update(&ctx, byte, order);
         ctx.push(byte);
     }
 
@@ -316,9 +318,9 @@ pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(orig_len);
 
     for _ in 0..orig_len {
-        let byte = decode_byte_ppm(&mut dec, &model, &ctx);
+        let (byte, order) = decode_byte_ppm(&mut dec, &model, &ctx);
         output.push(byte);
-        model.update(&ctx, byte);
+        model.update(&ctx, byte, order);
         ctx.push(byte);
     }
 
