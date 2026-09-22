@@ -1,270 +1,192 @@
-#!/bin/bash
-# NEXCOMP Benchmark Script — Ubuntu 24.04 LTS
-# Reproduces all benchmarks from §4 of the NEXCOMP design document.
+#!/usr/bin/env bash
+# Benchmark NEXCOMP against the reference compressors on the standard corpora
+# and write a result artifact that records how it was measured.
 #
-# Requirements: ~5GB disk, ~8GB RAM, internet connection
-# Tested on: Ubuntu 24.04 LTS, Ryzen 7 5800X, 32GB RAM
+#   scripts/benchmark.sh [corpus ...]      default: calgary canterbury silesia enwik8
 #
-# Usage: chmod +x benchmark.sh && ./benchmark.sh
+# Environment:
+#   NEXCOMP_CORPORA_DIR   where the corpora live (default ~/corpora)
+#   NEXCOMP_TOOLS         which tools to run (default: nexcomp xz bzip2, plus
+#                         zstd and brotli when installed)
+#   NEXCOMP_BIN           the binary under test (default target/release/nexcomp)
+#
+# Every file is compressed and decompressed on its own; the result is only
+# recorded when the restored bytes hash to the original. Sizes are whole files,
+# framing included.
 
 set -euo pipefail
 
-WORKDIR="$(pwd)/nexcomp-bench"
-CORPUS_DIR="$WORKDIR/corpora"
-RESULTS_DIR="$WORKDIR/results"
-TOOLS_DIR="$WORKDIR/tools"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORPORA_DIR="${NEXCOMP_CORPORA_DIR:-$HOME/corpora}"
+NEXCOMP_BIN="${NEXCOMP_BIN:-$ROOT/target/release/nexcomp}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$CORPUS_DIR" "$RESULTS_DIR" "$TOOLS_DIR"
+CORPORA=("$@")
+[ ${#CORPORA[@]} -eq 0 ] && CORPORA=(calgary canterbury silesia enwik8)
 
-echo "============================================"
-echo " NEXCOMP Benchmark Suite v1.0"
-echo " $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "============================================"
-
-# ──────────────────────────────────────────────
-# 1. Download corpora
-# ──────────────────────────────────────────────
-echo ""
-echo "[1/5] Downloading benchmark corpora..."
-
-# Silesia corpus (211 MB)
-if [ ! -d "$CORPUS_DIR/silesia" ]; then
-    echo "  Downloading Silesia corpus..."
-    mkdir -p "$CORPUS_DIR/silesia"
-    cd "$CORPUS_DIR/silesia"
-    wget -q "http://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip" -O silesia.zip
-    unzip -q silesia.zip
-    rm silesia.zip
-    cd "$WORKDIR"
-else
-    echo "  Silesia corpus already present."
+TOOLS="${NEXCOMP_TOOLS:-}"
+if [ -z "$TOOLS" ]; then
+    TOOLS="nexcomp xz bzip2"
+    command -v zstd >/dev/null && TOOLS="$TOOLS zstd"
+    command -v brotli >/dev/null && TOOLS="$TOOLS brotli"
 fi
 
-# enwik8 (100 MB — first 10^8 bytes of English Wikipedia)
-if [ ! -f "$CORPUS_DIR/enwik8" ]; then
-    echo "  Downloading enwik8..."
-    cd "$CORPUS_DIR"
-    wget -q "http://mattmahoney.net/dc/enwik8.zip" -O enwik8.zip
-    unzip -q enwik8.zip
-    rm enwik8.zip
-    cd "$WORKDIR"
-else
-    echo "  enwik8 already present."
-fi
-
-# Calgary corpus (3.2 MB)
-if [ ! -d "$CORPUS_DIR/calgary" ]; then
-    echo "  Downloading Calgary corpus..."
-    mkdir -p "$CORPUS_DIR/calgary"
-    cd "$CORPUS_DIR/calgary"
-    wget -q "http://www.data-compression.info/files/corpora/largecalgarycorpus.zip" -O calgary.zip
-    unzip -q calgary.zip || true
-    rm -f calgary.zip
-    cd "$WORKDIR"
-else
-    echo "  Calgary corpus already present."
-fi
-
-echo "  Corpora ready."
-
-# ──────────────────────────────────────────────
-# 2. Install compressor tools
-# ──────────────────────────────────────────────
-echo ""
-echo "[2/5] Installing compressor tools..."
-
-install_if_missing() {
-    local cmd="$1"
-    local pkg="$2"
-    if ! command -v "$cmd" &>/dev/null; then
-        echo "  Installing $pkg..."
-        sudo apt-get install -y -qq "$pkg" 2>/dev/null || echo "  WARNING: Could not install $pkg"
-    fi
+sha256() {
+    if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
-install_if_missing gzip gzip
-install_if_missing bzip2 bzip2
-install_if_missing xz xz-utils
-install_if_missing zstd zstd
-install_if_missing brotli brotli
+now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
 
-# Build NEXCOMP
-echo "  Building NEXCOMP (release)..."
-cd "$(dirname "$0")/.."
-cargo build --release 2>&1 | tail -1
-NEXCOMP="$(pwd)/target/release/nexcomp"
-cd "$WORKDIR"
-
-echo "  Tools ready."
-
-# ──────────────────────────────────────────────
-# 3. Run benchmarks
-# ──────────────────────────────────────────────
-echo ""
-echo "[3/5] Running benchmarks..."
-
-# Benchmark function: compress, measure, decompress, verify
-# Usage: run_bench <name> <compress_cmd> <decompress_cmd> <input> <compressed> <decompressed>
-run_bench() {
-    local name="$1"
-    local input="$2"
-    local compress_cmd="$3"
-    local compressed="$4"
-    local decompress_cmd="$5"
-    local decompressed="$6"
-    local corpus_name="$7"
-
-    local input_size
-    input_size=$(stat -c%s "$input" 2>/dev/null || stat -f%z "$input")
-
-    # Compress
-    local comp_start comp_end comp_time
-    comp_start=$(date +%s%N)
-    eval "$compress_cmd" 2>/dev/null
-    comp_end=$(date +%s%N)
-    comp_time=$(( (comp_end - comp_start) / 1000000 )) # ms
-
-    if [ ! -f "$compressed" ]; then
-        echo "  SKIP: $name on $corpus_name (compression failed)"
-        return
-    fi
-
-    local comp_size
-    comp_size=$(stat -c%s "$compressed" 2>/dev/null || stat -f%z "$compressed")
-
-    # Decompress
-    local dec_start dec_end dec_time
-    dec_start=$(date +%s%N)
-    eval "$decompress_cmd" 2>/dev/null
-    dec_end=$(date +%s%N)
-    dec_time=$(( (dec_end - dec_start) / 1000000 )) # ms
-
-    # Verify integrity
-    local original_md5 decoded_md5 integrity
-    original_md5=$(md5sum "$input" | cut -d' ' -f1)
-    if [ -f "$decompressed" ]; then
-        decoded_md5=$(md5sum "$decompressed" | cut -d' ' -f1)
-        if [ "$original_md5" = "$decoded_md5" ]; then
-            integrity="OK"
-        else
-            integrity="FAIL"
-        fi
-    else
-        integrity="SKIP"
-    fi
-
-    # Calculate metrics
-    local ratio bpb comp_speed dec_speed
-    ratio=$(echo "scale=4; $comp_size / $input_size * 100" | bc)
-    bpb=$(echo "scale=4; $comp_size * 8 / $input_size" | bc)
-
-    if [ "$comp_time" -gt 0 ]; then
-        comp_speed=$(echo "scale=1; $input_size / 1048576 / ($comp_time / 1000)" | bc)
-    else
-        comp_speed="INF"
-    fi
-
-    if [ "$dec_time" -gt 0 ]; then
-        dec_speed=$(echo "scale=1; $input_size / 1048576 / ($dec_time / 1000)" | bc)
-    else
-        dec_speed="INF"
-    fi
-
-    local mem_mb
-    mem_mb=$(echo "scale=1; $comp_size / 1048576" | bc)
-
-    # Output row
-    printf "| %-14s | %-10s | %8s | %6s | %8s | %8s | %6s | %s |\n" \
-        "$name" "$corpus_name" "${ratio}%" "$bpb" "${comp_speed} MB/s" "${dec_speed} MB/s" "${mem_mb}M" "$integrity"
-
-    # Append to CSV
-    echo "$name,$corpus_name,$input_size,$comp_size,$ratio,$bpb,$comp_speed,$dec_speed,$comp_time,$dec_time,$integrity" \
-        >> "$RESULTS_DIR/results.csv"
-
-    # Cleanup
-    rm -f "$compressed" "$decompressed"
+# Run a command, setting SECS and RSS (bytes). stdout goes to $1.
+measure() {
+    local out="$1"; shift
+    local log start end
+    log="$(mktemp)"
+    start="$(now)"
+    /usr/bin/time -l "$@" >"$out" 2>"$log" || /usr/bin/time -v "$@" >"$out" 2>"$log"
+    end="$(now)"
+    SECS="$(perl -e 'printf "%.3f\n", $ARGV[1] - $ARGV[0]' "$start" "$end")"
+    # macOS: "<bytes> maximum resident set size"; GNU: "Maximum resident set size (kbytes): <n>"
+    RSS="$(awk '/maximum resident set size/ {print $1; found=1}
+                /Maximum resident set size/ {print $NF * 1024; found=1}
+                END {if (!found) print 0}' "$log" | head -1)"
+    rm -f "$log"
 }
 
-# CSV header
-echo "compressor,corpus,input_bytes,output_bytes,ratio_pct,bpb,comp_mb_s,dec_mb_s,comp_ms,dec_ms,integrity" \
-    > "$RESULTS_DIR/results.csv"
+compress_cmd() {
+    case "$1" in
+        nexcomp) echo "$NEXCOMP_BIN compress %in% %out%" ;;
+        xz) echo "xz -9e -T1 -c %in%" ;;
+        bzip2) echo "bzip2 -9 -c %in%" ;;
+        zstd) echo "zstd --ultra -22 --long=27 -T1 -q -c %in%" ;;
+        brotli) echo "brotli -q 11 -c %in%" ;;
+    esac
+}
 
-# Table header
-echo ""
-printf "| %-14s | %-10s | %8s | %6s | %8s | %8s | %6s | %s |\n" \
-    "Compressor" "Corpus" "Ratio" "bpb" "Comp" "Decomp" "OutSz" "OK?"
-printf "|%s|%s|%s|%s|%s|%s|%s|%s|\n" \
-    "$(printf '%.0s-' {1..16})" "$(printf '%.0s-' {1..12})" \
-    "$(printf '%.0s-' {1..10})" "$(printf '%.0s-' {1..8})" \
-    "$(printf '%.0s-' {1..10})" "$(printf '%.0s-' {1..10})" \
-    "$(printf '%.0s-' {1..8})" "$(printf '%.0s-' {1..6})"
+decompress_cmd() {
+    case "$1" in
+        nexcomp) echo "$NEXCOMP_BIN decompress %out% %restored%" ;;
+        xz) echo "xz -dc %out%" ;;
+        bzip2) echo "bzip2 -dc %out%" ;;
+        zstd) echo "zstd -dc --long=27 %out%" ;;
+        brotli) echo "brotli -dc %out%" ;;
+    esac
+}
 
-# Run all benchmarks for enwik8
-INPUT="$CORPUS_DIR/enwik8"
-TMP="$WORKDIR/tmp"
-mkdir -p "$TMP"
+tool_version() {
+    case "$1" in
+        nexcomp) "$NEXCOMP_BIN" --version ;;
+        xz) xz --version | head -1 ;;
+        bzip2) bzip2 --help 2>&1 | head -1 | sed 's/^ *//' ;;
+        zstd) zstd --version ;;
+        brotli) brotli --version ;;
+    esac
+}
 
-if [ -f "$INPUT" ]; then
-    for tool in gzip bzip2 xz zstd brotli; do
-        case $tool in
-            gzip)
-                run_bench "gzip -9" "$INPUT" \
-                    "gzip -9 -c '$INPUT' > '$TMP/out.gz'" "$TMP/out.gz" \
-                    "gzip -d -c '$TMP/out.gz' > '$TMP/dec'" "$TMP/dec" "enwik8"
-                ;;
-            bzip2)
-                run_bench "bzip2 -9" "$INPUT" \
-                    "bzip2 -9 -c '$INPUT' > '$TMP/out.bz2'" "$TMP/out.bz2" \
-                    "bzip2 -d -c '$TMP/out.bz2' > '$TMP/dec'" "$TMP/dec" "enwik8"
-                ;;
-            xz)
-                run_bench "xz -9e" "$INPUT" \
-                    "xz -9e -c '$INPUT' > '$TMP/out.xz'" "$TMP/out.xz" \
-                    "xz -d -c '$TMP/out.xz' > '$TMP/dec'" "$TMP/dec" "enwik8"
-                ;;
-            zstd)
-                run_bench "zstd --ultra -22" "$INPUT" \
-                    "zstd --ultra -22 -c '$INPUT' > '$TMP/out.zst'" "$TMP/out.zst" \
-                    "zstd -d -c '$TMP/out.zst' > '$TMP/dec'" "$TMP/dec" "enwik8"
-                ;;
-            brotli)
-                run_bench "brotli -q11" "$INPUT" \
-                    "brotli -q 11 -c '$INPUT' > '$TMP/out.br'" "$TMP/out.br" \
-                    "brotli -d -c '$TMP/out.br' > '$TMP/dec'" "$TMP/dec" "enwik8"
-                ;;
-        esac
+files_of() {
+    awk -F'\t' -v c="$1" '$1 == c {print $2}' "$ROOT/bench/manifest.tsv"
+}
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+mkdir -p "$ROOT/bench/results"
+tsv="$ROOT/bench/results/$stamp-$os-$arch.tsv"
+md="$ROOT/bench/results/$stamp-$os-$arch.md"
+
+if [ "$os" = darwin ]; then
+    cpu="$(sysctl -n machdep.cpu.brand_string)"
+    cores="$(sysctl -n hw.ncpu)"
+    memory="$(( $(sysctl -n hw.memsize) / 1024 / 1024 )) MiB"
+else
+    cpu="$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)"
+    cores="$(nproc)"
+    memory="$(awk '/MemTotal/ {print int($2 / 1024) " MiB"}' /proc/meminfo)"
+fi
+
+{
+    echo "# NEXCOMP benchmark $stamp"
+    echo
+    echo '```'
+    echo "commit        $(git -C "$ROOT" rev-parse HEAD)$(git -C "$ROOT" diff --quiet || echo ' (dirty working tree)')"
+    echo "rustc         $(rustc -Vv | tr '\n' ' ' | sed 's/  */ /g')"
+    echo "host          $os $arch, $cpu, $cores cores, $memory"
+    echo "kernel        $(uname -srv)"
+    echo "threads       ${RAYON_NUM_THREADS:-$cores} (RAYON_NUM_THREADS)"
+    echo "corpora       $CORPORA_DIR, verified against bench/manifest.tsv"
+    for tool in $TOOLS; do printf '%-13s %s\n' "$tool" "$(tool_version "$tool")"; done
+    echo '```'
+    echo
+} > "$md"
+
+printf 'corpus\tfile\ttool\toriginal\tcompressed\tbpb\tcompress_s\tcompress_rss\tdecompress_s\tdecompress_rss\n' > "$tsv"
+
+echo "verifying corpora..."
+bash "$ROOT/scripts/corpora.sh" verify
+
+for corpus in "${CORPORA[@]}"; do
+    echo "== $corpus"
+    for tool in $TOOLS; do
+        [ -n "$(compress_cmd "$tool")" ] || continue
+        total_in=0; total_out=0; total_cs=0; total_ds=0; max_rss=0
+        for file in $(files_of "$corpus"); do
+            input="$CORPORA_DIR/$corpus/$file"
+            packed="$WORK/$file.$tool"
+            restored="$WORK/$file.restored"
+            rm -f "$packed" "$restored"
+
+            cmd="$(compress_cmd "$tool")"
+            cmd="${cmd//%in%/$input}"; cmd="${cmd//%out%/$packed}"
+            # shellcheck disable=SC2086
+            if [ "$tool" = nexcomp ]; then measure /dev/null $cmd; else measure "$packed" $cmd; fi
+            cs="$SECS"; c_rss="$RSS"
+
+            cmd="$(decompress_cmd "$tool")"
+            cmd="${cmd//%out%/$packed}"; cmd="${cmd//%restored%/$restored}"
+            # shellcheck disable=SC2086
+            if [ "$tool" = nexcomp ]; then measure /dev/null $cmd; else measure "$restored" $cmd; fi
+            ds="$SECS"; d_rss="$RSS"
+
+            if [ "$(sha256 "$input")" != "$(sha256 "$restored")" ]; then
+                echo "  $tool $file: RESTORED BYTES DIFFER" >&2
+                exit 1
+            fi
+
+            in_size="$(wc -c < "$input" | tr -d ' ')"
+            out_size="$(wc -c < "$packed" | tr -d ' ')"
+            bpb="$(perl -e 'printf "%.4f\n", $ARGV[0] * 8 / $ARGV[1]' "$out_size" "$in_size")"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$corpus" "$file" "$tool" "$in_size" "$out_size" "$bpb" "$cs" "$c_rss" "$ds" "$d_rss" >> "$tsv"
+            total_in=$((total_in + in_size)); total_out=$((total_out + out_size))
+            total_cs="$(perl -e 'printf "%.3f\n", $ARGV[0] + $ARGV[1]' "$total_cs" "$cs")"
+            total_ds="$(perl -e 'printf "%.3f\n", $ARGV[0] + $ARGV[1]' "$total_ds" "$ds")"
+            [ "$c_rss" -gt "$max_rss" ] && max_rss="$c_rss"
+            rm -f "$packed" "$restored"
+        done
+        bpb="$(perl -e 'printf "%.4f\n", $ARGV[0] * 8 / $ARGV[1]' "$total_out" "$total_in")"
+        printf '%s\ttotal\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$corpus" "$tool" "$total_in" "$total_out" "$bpb" "$total_cs" "$max_rss" "$total_ds" 0 >> "$tsv"
+        printf '  %-8s %12s bytes  %6s bpb  %8ss compress  %8ss decompress  %s MiB peak\n' \
+            "$tool" "$total_out" "$bpb" "$total_cs" "$total_ds" "$((max_rss / 1048576))"
     done
+done
 
-    # NEXCOMP
-    if [ -f "$NEXCOMP" ]; then
-        run_bench "NEXCOMP" "$INPUT" \
-            "'$NEXCOMP' compress '$INPUT' '$TMP/out.nxc'" "$TMP/out.nxc" \
-            "'$NEXCOMP' decompress '$TMP/out.nxc' '$TMP/dec'" "$TMP/dec" "enwik8"
-    fi
-fi
+{
+    for corpus in "${CORPORA[@]}"; do
+        echo "## $corpus"
+        echo
+        echo "| tool | compressed | bpb | compress s | decompress s | peak RSS MiB |"
+        echo "|---|---|---|---|---|---|"
+        awk -F'\t' -v c="$corpus" '$1 == c && $2 == "total" {
+            printf "| %s | %s | %s | %s | %s | %d |\n", $3, $5, $6, $7, $9, $8 / 1048576
+        }' "$tsv"
+        echo
+    done
+    echo "Per-file numbers: \`$(basename "$tsv")\`."
+} >> "$md"
 
-# ──────────────────────────────────────────────
-# 4. Generate summary
-# ──────────────────────────────────────────────
-echo ""
-echo "[4/5] Generating result summary..."
-echo ""
-echo "Results saved to: $RESULTS_DIR/results.csv"
-
-# ──────────────────────────────────────────────
-# 5. Verify integrity
-# ──────────────────────────────────────────────
-echo ""
-echo "[5/5] Integrity verification..."
-FAILURES=$(grep "FAIL" "$RESULTS_DIR/results.csv" | wc -l)
-if [ "$FAILURES" -gt 0 ]; then
-    echo "  WARNING: $FAILURES round-trip failures detected!"
-    grep "FAIL" "$RESULTS_DIR/results.csv"
-else
-    echo "  All round-trips verified successfully."
-fi
-
-echo ""
-echo "============================================"
-echo " Benchmark complete: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "============================================"
+echo
+echo "wrote $md"
+echo "      $tsv"

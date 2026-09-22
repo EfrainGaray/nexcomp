@@ -1,7 +1,7 @@
 //! MinMask research experiments (docs/research/minmask-syndrome-experiment.md).
 //!
 //! Every experiment is `#[ignore]`; run one with:
-//!   NEXCOMP_CORPORA_DIR=/path/to/corpora cargo test --release \
+//!   NEXCOMP_CORPORA_DIR=~/corpora cargo test --release \
 //!     --test minmask_experiment -- --ignored --nocapture --test-threads=1 <name>
 //! Corpora layout: <dir>/calgary, <dir>/canterbury, <dir>/silesia, <dir>/enwik8.
 
@@ -352,7 +352,8 @@ fn experiment_synthetic() {
 // ---------------------------------------------------------------------------
 
 fn corpus_files(corpus: &str) -> Vec<(String, Vec<u8>)> {
-    let dir = std::env::var("NEXCOMP_CORPORA_DIR").unwrap_or_else(|_| "/tmp/nexcomp_corpora".into());
+    let dir = std::env::var("NEXCOMP_CORPORA_DIR")
+        .unwrap_or_else(|_| format!("{}/corpora", std::env::var("HOME").unwrap_or_default()));
     let path = std::path::Path::new(&dir).join(corpus);
     let mut names: Vec<_> = std::fs::read_dir(&path)
         .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_file()).map(|e| e.path()).collect())
