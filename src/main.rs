@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -107,14 +107,26 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     compressed
 }
 
-fn decompress_data(data: &[u8]) -> Result<Vec<u8>, NexcompError> {
+/// Decode `data` straight to `path`, so a file that expands to more than fits
+/// in memory is written block by block instead of being assembled first.
+fn decompress_to_file(data: &[u8], path: &str) -> Result<usize, NexcompError> {
     if data.is_empty() {
-        return Ok(Vec::new());
+        fs::write(path, [])?;
+        return Ok(0);
     }
-    if adaptive::container_format(data).is_some() {
-        return Ok(adaptive::try_adaptive_decompress(data)?);
+    if adaptive::container_format(data).is_none() {
+        return Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
     }
-    Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease))
+    let mut out = io::BufWriter::new(fs::File::create(path)?);
+    let written = adaptive::decompress_to(data, &mut out).and_then(|n| {
+        out.flush().map_err(|e| adaptive::AdaptiveError::Io(e.to_string()))?;
+        Ok(n)
+    });
+    if written.is_err() {
+        // Never leave a half-written or unverified file behind.
+        let _ = fs::remove_file(path);
+    }
+    Ok(written?)
 }
 
 /// Environment variable holding the password when no --password-file is given.
@@ -215,10 +227,8 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
 
             let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
-            let decompressed = decompress_data(&payload)?;
-
-            fs::write(&output, &decompressed)?;
-            eprintln!("Done: {} bytes restored.", decompressed.len());
+            let restored = decompress_to_file(&payload, &output)?;
+            eprintln!("Done: {restored} bytes restored.");
         }
         Commands::Inspect {
             input,

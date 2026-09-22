@@ -53,6 +53,8 @@ pub enum AdaptiveError {
     SizeMismatch { expected: usize, got: usize },
     #[error("file hash mismatch: the data is corrupt")]
     DigestMismatch,
+    #[error("writing the output failed: {0}")]
+    Io(String),
 }
 
 impl CodecId {
@@ -168,22 +170,14 @@ fn select_best_codec(data: &[u8]) -> (Vec<u8>, CodecId) {
         candidates.push(CodecId::Ppm);
     }
 
-    let encoded: Vec<Option<Vec<u8>>> = candidates
-        .par_iter()
-        .map(|&codec| encode_with(codec, data))
-        .collect();
-
-    let mut best: Option<(Vec<u8>, CodecId)> = None;
-    for (codec, out) in candidates.into_iter().zip(encoded) {
-        let Some(out) = out else { continue };
-        if out.is_empty() {
-            continue;
-        }
-        if best.as_ref().map_or(true, |(b, _)| out.len() < b.len()) {
-            best = Some((out, codec));
-        }
-    }
-    best.expect("baseline always encodes")
+    // Reducing instead of collecting frees each loser as soon as it loses,
+    // rather than holding every candidate until the end. Rayon reduces in
+    // order, so a tie still keeps the earlier candidate.
+    candidates
+        .into_par_iter()
+        .filter_map(|codec| encode_with(codec, data).filter(|out| !out.is_empty()).map(|out| (out, codec)))
+        .reduce_with(|best, other| if other.0.len() < best.0.len() { other } else { best })
+        .expect("baseline always encodes")
 }
 
 /// Compress a block adaptively with no-regression guarantee.
@@ -462,6 +456,50 @@ pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError>
 
 /// Like [`try_adaptive_decompress`], but refuses files that declare more than
 /// `max_output` bytes before allocating anything for them.
+/// Decode one block: its codec, the BCJ filter, its length and its checksum.
+fn decode_block(block: &BlockInfo<'_>) -> Result<Vec<u8>, AdaptiveError> {
+    // Some codec internals still assert on impossible input; a corrupt file
+    // must surface as an error, never abort the process.
+    let decode = || -> Result<Vec<u8>, AdaptiveError> {
+        let decompressed = decompress_block_adaptive(block.codec, block.data, block.orig_len)?;
+        Ok(if block.bcj_applied { bcj_filter::bcj_decode(&decompressed) } else { decompressed })
+    };
+    let decompressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
+        .map_err(|_| AdaptiveError::DecoderPanic(block.codec.name()))??;
+    if decompressed.len() != block.orig_len {
+        return Err(AdaptiveError::SizeMismatch { expected: block.orig_len, got: decompressed.len() });
+    }
+    if crc32(&decompressed) != block.crc {
+        return Err(AdaptiveError::ChecksumMismatch);
+    }
+    Ok(decompressed)
+}
+
+/// Decode a container into `out`, block by block, so memory stays bounded by
+/// the blocks in flight instead of the whole output. Returns the bytes written.
+///
+/// The hash of an NX14 file is checked once everything is written, so a caller
+/// writing to a file must discard it if this returns an error.
+pub fn decompress_to<W: std::io::Write>(payload: &[u8], out: &mut W) -> Result<usize, AdaptiveError> {
+    let (orig_len, blocks, digest) = parse_container(payload)?;
+    let in_flight = rayon::current_num_threads().max(1);
+    let mut hasher = blake3::Hasher::new();
+    for group in blocks.chunks(in_flight) {
+        let decoded: Vec<Result<Vec<u8>, AdaptiveError>> = group.par_iter().map(decode_block).collect();
+        for block in decoded {
+            let block = block?;
+            if digest.is_some() {
+                hasher.update(&block);
+            }
+            out.write_all(&block).map_err(|e| AdaptiveError::Io(e.to_string()))?;
+        }
+    }
+    if digest.is_some_and(|d| hasher.finalize().as_bytes() != d) {
+        return Err(AdaptiveError::DigestMismatch);
+    }
+    Ok(orig_len)
+}
+
 pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Result<Vec<u8>, AdaptiveError> {
     let (orig_len, blocks, digest) = parse_container(payload)?;
     if orig_len > max_output {
@@ -469,21 +507,7 @@ pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Res
     }
     let mut out = vec![0u8; orig_len];
     out.par_chunks_mut(BLOCK_SIZE).zip(blocks.par_iter()).try_for_each(|(dst, b)| {
-        // Some codec internals still assert on impossible input; a corrupt
-        // file must surface as an error, never abort the process.
-        let decode = || -> Result<Vec<u8>, AdaptiveError> {
-            let decompressed = decompress_block_adaptive(b.codec, b.data, b.orig_len)?;
-            Ok(if b.bcj_applied { bcj_filter::bcj_decode(&decompressed) } else { decompressed })
-        };
-        let decompressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
-            .map_err(|_| AdaptiveError::DecoderPanic(b.codec.name()))??;
-        if decompressed.len() != b.orig_len {
-            return Err(AdaptiveError::SizeMismatch { expected: b.orig_len, got: decompressed.len() });
-        }
-        if crc32(&decompressed) != b.crc {
-            return Err(AdaptiveError::ChecksumMismatch);
-        }
-        dst.copy_from_slice(&decompressed);
+        dst.copy_from_slice(&decode_block(b)?);
         Ok(())
     })?;
     // The per-block CRC localises corruption; this proves the whole file.

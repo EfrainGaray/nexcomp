@@ -5,7 +5,9 @@
 //! hostile case below declares a 1-byte block, so no request may come close
 //! to the limit.
 
-use nexcomp::adaptive::{adaptive_compress, try_adaptive_decompress, try_adaptive_decompress_limited, CodecId};
+use nexcomp::adaptive::{
+    adaptive_compress, decompress_to, try_adaptive_decompress, try_adaptive_decompress_limited, CodecId,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -117,4 +119,51 @@ fn output_limit_refuses_files_that_expand_beyond_it() {
     assert!(compressed.len() < 4096);
     assert!(try_adaptive_decompress_limited(&compressed, 1 << 20).is_err());
     assert_eq!(try_adaptive_decompress_limited(&compressed, data.len()).unwrap(), data);
+}
+
+/// A writer that only counts, so the test measures the decoder's memory.
+struct Counter(usize);
+
+impl std::io::Write for Counter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_file_that_expands_hugely_streams_instead_of_being_assembled() {
+    // 16 MiB of zeros in a few thousand bytes: assembling it in memory first is
+    // what a decompression bomb relies on.
+    let data = vec![0u8; 16 << 20];
+    let compressed = adaptive_compress(&data);
+    assert!(compressed.len() < 8192, "{} bytes", compressed.len());
+
+    let mut counter = Counter(0);
+    LARGEST.store(0, Ordering::Relaxed);
+    let written = decompress_to(&compressed, &mut counter).expect("streams");
+    let largest = LARGEST.load(Ordering::Relaxed);
+    assert_eq!((written, counter.0), (data.len(), data.len()));
+    assert!(largest <= 8 << 20, "largest allocation was {largest} bytes");
+    assert!(data.len() / compressed.len() > 2000, "the bomb must expand hugely");
+}
+
+#[test]
+fn streaming_and_in_memory_decoding_agree() {
+    let data: Vec<u8> = (0..(5 << 20) as u32).flat_map(|i| (i % 251).to_le_bytes()).take(5 << 20).collect();
+    let compressed = adaptive_compress(&data);
+    let mut streamed = Vec::new();
+    assert_eq!(decompress_to(&compressed, &mut streamed).unwrap(), data.len());
+    assert_eq!(streamed, data);
+    assert_eq!(try_adaptive_decompress(&compressed).unwrap(), data);
+
+    let mut corrupt = compressed.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    let mut out = Vec::new();
+    assert!(decompress_to(&corrupt, &mut out).is_err());
 }
