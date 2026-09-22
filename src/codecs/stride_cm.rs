@@ -397,7 +397,11 @@ pub fn detect_record(data: &[u8], stride: usize) -> usize {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Encode a block of at most 64 MiB with a subset of [`ALL_MODELS`]; both
+/// bounds are what [`decode`] accepts.
 pub fn encode_with(data: &[u8], models: u8) -> Vec<u8> {
+    assert!(data.len() <= MAX_LEN, "stride-cm blocks are at most {MAX_LEN} bytes");
+    assert_eq!(models & !ALL_MODELS, 0, "unknown stride-cm model bits");
     let stride = detect_stride(data);
     let record = if models & MODEL_PLANE != 0 { detect_record(data, stride) } else { 0 };
     let mut out = Vec::with_capacity(HEADER + data.len() / 2);
@@ -454,6 +458,18 @@ pub fn decode(payload: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "unknown stride-cm model bits")]
+    fn encode_refuses_model_bits_the_decoder_rejects() {
+        encode_with(&[], 32);
+    }
+
+    #[test]
+    #[should_panic(expected = "stride-cm blocks are at most")]
+    fn encode_refuses_blocks_the_decoder_rejects() {
+        encode(&vec![0u8; MAX_LEN + 1]);
+    }
 
     fn lcg(state: &mut u64) -> u64 {
         *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
