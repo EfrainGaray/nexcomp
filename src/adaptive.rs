@@ -454,8 +454,6 @@ pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError>
     try_adaptive_decompress_limited(payload, usize::MAX)
 }
 
-/// Like [`try_adaptive_decompress`], but refuses files that declare more than
-/// `max_output` bytes before allocating anything for them.
 /// Decode one block: its codec, the BCJ filter, its length and its checksum.
 fn decode_block(block: &BlockInfo<'_>) -> Result<Vec<u8>, AdaptiveError> {
     // Some codec internals still assert on impossible input; a corrupt file
@@ -500,6 +498,8 @@ pub fn decompress_to<W: std::io::Write>(payload: &[u8], out: &mut W) -> Result<u
     Ok(orig_len)
 }
 
+/// Like [`try_adaptive_decompress`], but refuses files that declare more than
+/// `max_output` bytes before allocating anything for them.
 pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Result<Vec<u8>, AdaptiveError> {
     let (orig_len, blocks, digest) = parse_container(payload)?;
     if orig_len > max_output {
