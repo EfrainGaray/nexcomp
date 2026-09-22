@@ -14,16 +14,16 @@ and decompressed on its own, and only recorded once the restored bytes hashed to
 
 | corpus | original | NEXCOMP | bpb | xz | bzip2 |
 |---|---|---|---|---|---|
-| calgary | 3141622 | 744025 | 1.8946 | 843828 | 828347 |
-| canterbury | 2810784 | 406444 | 1.1568 | 493080 | 542710 |
-| silesia | 211938580 | 45708739 | 1.7254 | 48456004 | 54506769 |
+| calgary | 3141622 | 743707 | 1.8938 | 843828 | 828347 |
+| canterbury | 2810784 | 406397 | 1.1567 | 493080 | 542710 |
+| silesia | 211938580 | 45630063 | 1.7224 | 48456004 | 54506769 |
 | enwik8 | 100000000 | 24485454 | 1.9588 | 24831648 | 29008758 |
 
 Measured by `scripts/benchmark.sh`; environment and per-file numbers in
-[`bench/results/20260922T190350Z-darwin-x86_64.md`](bench/results/20260922T190350Z-darwin-x86_64.md), [`bench/results/20260922T190707Z-darwin-x86_64.md`](bench/results/20260922T190707Z-darwin-x86_64.md).
+[`bench/results/20260922T190350Z-darwin-x86_64.md`](bench/results/20260922T190350Z-darwin-x86_64.md), [`bench/results/20260922T190707Z-darwin-x86_64.md`](bench/results/20260922T190707Z-darwin-x86_64.md), [`bench/results/20260922T204629Z-darwin-x86_64.md`](bench/results/20260922T204629Z-darwin-x86_64.md).
 
 NEXCOMP is ahead of the general-purpose tools and behind the context-mixing leaders. On Silesia its
-45,708,739 bytes sit below bsc (46,723,436) and 7-Zip -mx=9 (48,792,760), inside the tier of
+45,630,063 bytes sit below bsc (46,723,436) and 7-Zip -mx=9 (48,792,760), inside the tier of
 Tangelo 2.3 (44,037,765) and TNSSRC (45,267,065), with paq8px_v215 at 27,825,511 and cmix at
 28,261,094 another 17 MB below. Those four figures are from Matt Mahoney's published tables, not
 measured here.

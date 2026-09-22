@@ -6,7 +6,7 @@
 
 use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, parse_blocks, BLOCK_SIZE};
 use nexcomp::codecs::stride_cm::{
-    self, ALL_MODELS, MODEL_BITS, MODEL_COLUMN, MODEL_DELTA, MODEL_LINEAR, MODEL_PLANE,
+    self, ALL_MODELS, MODEL_BITS, MODEL_COLUMN, MODEL_DELTA, MODEL_LINEAR, MODEL_MATCH, MODEL_PLANE,
 };
 use rayon::prelude::*;
 use std::time::Instant;
@@ -233,14 +233,17 @@ fn ablation() {
             sets.push((format!("{file} (first 1 MiB)"), data[..data.len().min(1 << 20)].to_vec()));
         }
     }
-    let variants: [(&str, u8); 6] = [
+    let variants: [(&str, u8); 8] = [
         ("order-0..6 only", 0),
+        ("everything but the match model", ALL_MODELS & !MODEL_MATCH),
+        ("match model alone", MODEL_MATCH),
         ("+ column value context", MODEL_COLUMN),
         ("+ linear, delta, plane value contexts", MODEL_COLUMN | MODEL_LINEAR | MODEL_DELTA | MODEL_PLANE),
         ("+ expected-bit models (all)", ALL_MODELS),
         ("expected-bit models without plane", ALL_MODELS & !MODEL_PLANE),
         ("expected-bit linear only", MODEL_LINEAR | MODEL_BITS),
     ];
+    assert_eq!(variants.len(), 8);
     println!("\n### Ablation (bytes per set, container framing included)\n");
     let mut header = String::from("| variant | total |");
     let mut sep = String::from("|---|---|");

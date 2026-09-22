@@ -19,7 +19,10 @@ pub const MODEL_DELTA: u8 = 4;
 pub const MODEL_PLANE: u8 = 8;
 /// Expected-bit models for the active column/linear/plane predictors.
 pub const MODEL_BITS: u8 = 16;
-pub const ALL_MODELS: u8 = MODEL_COLUMN | MODEL_LINEAR | MODEL_DELTA | MODEL_PLANE | MODEL_BITS;
+/// Match model: the byte that followed this context the last time it appeared.
+pub const MODEL_MATCH: u8 = 32;
+pub const ALL_MODELS: u8 =
+    MODEL_COLUMN | MODEL_LINEAR | MODEL_DELTA | MODEL_PLANE | MODEL_BITS | MODEL_MATCH;
 
 const HEADER: usize = 8;
 const STRIDES: [usize; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
@@ -28,6 +31,10 @@ const MAX_RECORD: usize = 4096;
 const MAX_INPUTS: usize = 16;
 /// Predictors whose expected bit is also a direct context: column, linear, plane.
 const PREDICTORS: usize = 3;
+/// Context bytes that have to repeat before the match model believes anything.
+const MATCH_MIN: usize = 6;
+/// Match contexts: length class x expected bit x bit position x still agreeing.
+const MATCH_CONTEXTS: usize = 8 * 2 * 8 * 2;
 /// Bit-model contexts per predictor: phase x bit position x agree x expected x error class.
 const BIT_CONTEXTS: usize = PHASES * 8 * 2 * 2 * 5;
 /// Positions inside an element that get their own mixer weights.
@@ -185,6 +192,15 @@ struct Model {
     active: [bool; PREDICTORS],
     bit_tables: Vec<u32>,
     bit_slots: [usize; PREDICTORS],
+    /// Match model: where this context led last time, and how long it has held.
+    match_hash: Vec<u32>,
+    match_mask: usize,
+    match_ptr: usize,
+    match_len: usize,
+    match_byte: u8,
+    match_agree: bool,
+    match_tables: Vec<u32>,
+    match_slot: usize,
     mixer: Mixer,
     apm: Apm,
     c0: usize,
@@ -216,6 +232,8 @@ impl Model {
             bits_on && models & MODEL_PLANE != 0,
         ];
         let n_bit = active.iter().filter(|&&a| a).count();
+        let n_match = usize::from(models & MODEL_MATCH != 0);
+        let match_bits = if n_match == 1 { bits.min(22) } else { 1 };
         Self {
             stride,
             record,
@@ -233,7 +251,15 @@ impl Model {
             active,
             bit_tables: vec![SLOT_INIT; PREDICTORS * BIT_CONTEXTS],
             bit_slots: [0; PREDICTORS],
-            mixer: Mixer::new(3 + n_hashed + n_bit, PHASES * 256),
+            match_hash: vec![0u32; 1 << match_bits],
+            match_mask: (1 << match_bits) - 1,
+            match_ptr: 0,
+            match_len: 0,
+            match_byte: 0,
+            match_agree: true,
+            match_tables: vec![SLOT_INIT; MATCH_CONTEXTS * n_match.max(1)],
+            match_slot: 0,
+            mixer: Mixer::new(3 + n_hashed + n_bit + n_match, PHASES * 256),
             apm: Apm::new(256),
             c0: 1,
             c1: 0,
@@ -286,6 +312,9 @@ impl Model {
         let column = |back: usize| at(back + s);
         let linear = |back: usize| (2 * at(back + s)).wrapping_sub(at(back + 2 * s));
         let plane = |back: usize| (at(back + s) + at(back + r)).wrapping_sub(at(back + r + s));
+        if self.models & MODEL_MATCH != 0 {
+            self.track_match(hist);
+        }
         let now = [byte(column(0)), byte(linear(0)), byte(plane(0))];
         let before = [byte(column(s)), byte(linear(s)), byte(plane(s))];
         let actual = byte(at(s));
@@ -295,9 +324,58 @@ impl Model {
         }
     }
 
+    /// Follow the current match, or find a new one, for the byte at `hist.len()`.
+    fn track_match(&mut self, hist: &[u8]) {
+        let i = hist.len();
+        if i > 0 {
+            // The match holds while the byte it predicted was the byte that came.
+            if self.match_len > 0 && self.match_ptr < i && hist[self.match_ptr] == hist[i - 1] {
+                self.match_ptr += 1;
+                self.match_len = self.match_len.saturating_add(1);
+            } else {
+                self.match_len = 0;
+            }
+            if i >= MATCH_MIN {
+                let mut key = 0u64;
+                for k in 1..=MATCH_MIN {
+                    key = key << 8 | u64::from(hist[i - k]);
+                }
+                let h = hash(20, key) & self.match_mask;
+                if self.match_len == 0 {
+                    let candidate = self.match_hash[h] as usize;
+                    if candidate > 0 && candidate < i {
+                        self.match_ptr = candidate;
+                        self.match_len = 1;
+                    }
+                }
+                self.match_hash[h] = i as u32;
+            }
+        }
+        self.match_byte = if self.match_len > 0 && self.match_ptr < i { hist[self.match_ptr] } else { 0 };
+        self.match_agree = true;
+    }
+
+    /// How much history the match has agreed on, in eight classes.
+    fn match_class(&self) -> usize {
+        match self.match_len {
+            0 => 0,
+            1..=3 => 1,
+            4..=7 => 2,
+            8..=15 => 3,
+            16..=31 => 4,
+            32..=63 => 5,
+            64..=255 => 6,
+            _ => 7,
+        }
+    }
+
     /// Probability of a 1 for the next bit, 16-bit for the coder.
     fn predict(&mut self) -> u32 {
         let c0 = self.c0;
+        let (match_byte, bitpos, match_len, match_agree) =
+            (self.match_byte, self.bitpos, self.match_len, self.match_agree);
+        let match_class = self.match_class();
+        let mut match_slot = 0;
         let inputs = &mut self.mixer.inputs;
         inputs[0] = stretch(slot_p12(self.o0[c0]));
         inputs[1] = stretch(slot_p12(self.o1[self.c1 << 8 | c0]));
@@ -320,7 +398,16 @@ impl Model {
             inputs[k] = stretch(slot_p12(self.bit_tables[self.bit_slots[p]]));
             k += 1;
         }
+        if self.models & MODEL_MATCH != 0 {
+            let expected = usize::from((match_byte >> (7 - bitpos)) & 1);
+            let slot = ((match_class * 2 + expected) * 8 + bitpos) * 2 + usize::from(match_agree);
+            match_slot = slot;
+            // Without a match there is nothing to say, so the mixer sees zero.
+            inputs[k] = if match_len == 0 { 0 } else { stretch(slot_p12(self.match_tables[slot])) };
+            k += 1;
+        }
         inputs[k] = 256;
+        self.match_slot = match_slot;
         let mixed = self.mixer.predict(self.phase.min(PHASES - 1) << 8 | c0);
         // An order-1 APM stage measured worse here; one order-0 stage, lightly weighted.
         let refined = self.apm.pp(mixed, c0);
@@ -340,6 +427,14 @@ impl Model {
                 slot_update(&mut self.bit_tables[self.bit_slots[p]], bit);
                 let expected = (self.predicted[p] >> (7 - self.bitpos)) & 1 == 1;
                 self.agree[p] &= expected == bit;
+            }
+        }
+        if self.models & MODEL_MATCH != 0 && self.match_len > 0 {
+            slot_update(&mut self.match_tables[self.match_slot], bit);
+            if (self.match_byte >> (7 - self.bitpos)) & 1 != u8::from(bit) {
+                // A wrong bit means this is not the same context after all.
+                self.match_len = 0;
+                self.match_agree = false;
             }
         }
         self.mixer.update(bit);
@@ -462,7 +557,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unknown stride-cm model bits")]
     fn encode_refuses_model_bits_the_decoder_rejects() {
-        encode_with(&[], 32);
+        encode_with(&[], 0x80);
     }
 
     #[test]

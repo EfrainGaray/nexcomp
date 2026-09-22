@@ -100,7 +100,7 @@ each of the 14 files. The full table, with the environment it was measured in, i
 
 Silesia and enwik8 are a separate run of the same script (`bench/results/20260922T190707Z-darwin-x86_64.md`),
 because the machine was saturated by an unrelated build while this was written and one Silesia file
-alone took over half an hour there. Their numbers: Silesia 45,708,739 bytes (1.7254 bpb) against
+alone took over half an hour there. Their numbers: Silesia 45,630,063 bytes (1.7224 bpb) against
 xz -9e at 48,456,004 and bzip2 -9 at 54,506,769; enwik8 24,485,454 (1.9588 bpb) against 24,831,648
 and 29,008,758. Both are the previous measurements plus 32 bytes per file, which is the whole-file
 hash NX14 adds. Sizes do not depend on the load; the times and peak RSS in an artifact are only as
