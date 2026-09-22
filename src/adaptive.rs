@@ -26,7 +26,7 @@ pub enum CodecId {
     StrideCm = 7,
 }
 
-/// Errors from parsing or decoding the NX13 container.
+/// Errors from parsing or decoding the container.
 #[derive(Debug, Error)]
 pub enum AdaptiveError {
     #[error("bad magic")]
@@ -51,6 +51,8 @@ pub enum AdaptiveError {
     OutputLimit { declared: usize, limit: usize },
     #[error("size mismatch: expected {expected}, got {got}")]
     SizeMismatch { expected: usize, got: usize },
+    #[error("file hash mismatch: the data is corrupt")]
+    DigestMismatch,
 }
 
 impl CodecId {
@@ -306,8 +308,22 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8], expected_len: usiz
 /// Input is split into independent blocks of this size; each picks its own codec.
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
-/// Magic of the container this build writes.
-pub const CONTAINER_MAGIC: &[u8; 4] = b"NX13";
+/// Magic of the container this build writes: NX13 plus a whole-file hash.
+pub const CONTAINER_MAGIC: &[u8; 4] = b"NX14";
+
+/// Containers this build reads, with the length of their footer.
+const CONTAINER_FORMATS: [(&[u8; 4], usize); 2] = [(b"NX13", 0), (b"NX14", FILE_DIGEST_LEN)];
+
+/// BLAKE3 of the original bytes, in the NX14 footer.
+const FILE_DIGEST_LEN: usize = 32;
+
+/// The container format of `payload`, if this build reads it.
+pub fn container_format(payload: &[u8]) -> Option<&'static str> {
+    CONTAINER_FORMATS
+        .iter()
+        .find(|(magic, _)| payload.starts_with(*magic))
+        .map(|(magic, _)| std::str::from_utf8(*magic).expect("ascii magic"))
+}
 
 const FILE_HEADER_LEN: usize = 16;
 const BLOCK_HEADER_LEN: usize = 14;
@@ -330,9 +346,9 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 /// Full adaptive compress: data -> wire format
-/// Format: [4B magic "NX13"][8B orig_len LE][4B block_count LE] then per block:
+/// Format: [4B magic "NX14"][8B orig_len LE][4B block_count LE] then per block:
 ///         [1B codec_id][1B bcj_flag][4B orig_len LE][4B comp_len LE][4B crc32 LE][compressed_data]
-/// Blocks are compressed in parallel.
+/// and a [32B BLAKE3 of the original] footer. Blocks are compressed in parallel.
 pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
     let blocks: Vec<AdaptiveResult> = data
         .par_chunks(BLOCK_SIZE)
@@ -352,6 +368,7 @@ pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&crc32(chunk).to_le_bytes());
         out.extend_from_slice(&block.compressed);
     }
+    out.extend_from_slice(blake3::hash(data).as_bytes());
     out
 }
 
@@ -372,17 +389,24 @@ fn read_le<const N: usize>(payload: &[u8], pos: usize) -> Result<[u8; N], Adapti
 
 /// Parse the wire format into (orig_len, blocks) without decompressing.
 pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), AdaptiveError> {
-    if payload.len() < FILE_HEADER_LEN {
+    let (orig_len, blocks, _) = parse_container(payload)?;
+    Ok((orig_len, blocks))
+}
+
+/// Like [`parse_blocks`], and also the whole-file hash an NX14 file carries.
+fn parse_container(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>, Option<&[u8]>), AdaptiveError> {
+    let &(_, footer_len) = CONTAINER_FORMATS
+        .iter()
+        .find(|(magic, _)| payload.starts_with(*magic))
+        .ok_or(AdaptiveError::BadMagic)?;
+    if payload.len() < FILE_HEADER_LEN + footer_len {
         return Err(AdaptiveError::Truncated);
-    }
-    if &payload[0..4] != b"NX13" {
-        return Err(AdaptiveError::BadMagic);
     }
     let orig_len = usize::try_from(u64::from_le_bytes(read_le(payload, 4)?))
         .map_err(|_| AdaptiveError::Truncated)?;
     let block_count = u32::from_le_bytes(read_le(payload, 12)?) as usize;
     // Every block needs at least its header, so a hostile count cannot force a huge reservation.
-    if block_count > (payload.len() - FILE_HEADER_LEN) / BLOCK_HEADER_LEN {
+    if block_count > (payload.len() - FILE_HEADER_LEN - footer_len) / BLOCK_HEADER_LEN {
         return Err(AdaptiveError::Truncated);
     }
 
@@ -408,10 +432,12 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
         blocks.push(BlockInfo { codec, bcj_applied: bcj != 0, orig_len: block_orig, crc, data });
         pos = end;
     }
-    if pos != payload.len() {
-        return Err(AdaptiveError::TrailingBytes);
+    match (pos + footer_len).cmp(&payload.len()) {
+        std::cmp::Ordering::Greater => return Err(AdaptiveError::Truncated),
+        std::cmp::Ordering::Less => return Err(AdaptiveError::TrailingBytes),
+        std::cmp::Ordering::Equal => {}
     }
-    Ok((orig_len, blocks))
+    Ok((orig_len, blocks, (footer_len > 0).then(|| &payload[pos..])))
 }
 
 /// Codec name if every block agrees, otherwise `Mixed(a+b)` in first-seen order.
@@ -437,7 +463,7 @@ pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError>
 /// Like [`try_adaptive_decompress`], but refuses files that declare more than
 /// `max_output` bytes before allocating anything for them.
 pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Result<Vec<u8>, AdaptiveError> {
-    let (orig_len, blocks) = parse_blocks(payload)?;
+    let (orig_len, blocks, digest) = parse_container(payload)?;
     if orig_len > max_output {
         return Err(AdaptiveError::OutputLimit { declared: orig_len, limit: max_output });
     }
@@ -460,6 +486,10 @@ pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Res
         dst.copy_from_slice(&decompressed);
         Ok(())
     })?;
+    // The per-block CRC localises corruption; this proves the whole file.
+    if digest.is_some_and(|d| blake3::hash(&out).as_bytes() != d) {
+        return Err(AdaptiveError::DigestMismatch);
+    }
     Ok(out)
 }
 
@@ -571,7 +601,7 @@ mod tests {
         let data = b"Simple text data for header format test. \
                      Adding enough content to avoid being too short.";
         let compressed = adaptive_compress(data);
-        assert_eq!(&compressed[0..4], b"NX13");
+        assert_eq!(&compressed[0..4], CONTAINER_MAGIC);
         let (orig_len, blocks) = parse_blocks(&compressed).unwrap();
         assert_eq!(orig_len, data.len());
         assert_eq!(blocks.len(), 1);
@@ -686,6 +716,26 @@ mod tests {
             }
         }
         assert!(detected > 0);
+    }
+
+    #[test]
+    fn test_footer_hash_is_checked() {
+        let data = b"footer hash test data, compressible enough to take a real codec path";
+        let mut file = adaptive_compress(data);
+        assert_eq!(try_adaptive_decompress(&file).unwrap(), data);
+        let last = file.len() - 1;
+        file[last] ^= 1;
+        assert!(matches!(try_adaptive_decompress(&file), Err(AdaptiveError::DigestMismatch)));
+    }
+
+    #[test]
+    fn test_nx13_files_without_a_footer_still_decode() {
+        let data = b"NX13 has no whole-file hash; its files must keep decoding";
+        let mut file = adaptive_compress(data);
+        file.truncate(file.len() - FILE_DIGEST_LEN);
+        file[..4].copy_from_slice(b"NX13");
+        assert_eq!(container_format(&file), Some("NX13"));
+        assert_eq!(try_adaptive_decompress(&file).unwrap(), data);
     }
 
     #[test]

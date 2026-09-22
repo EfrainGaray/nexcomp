@@ -140,5 +140,5 @@ fn version_and_inspect_report_the_real_version_and_format() {
     let (code, stderr) = run(&["compress", input.to_str().unwrap(), packed.to_str().unwrap()]);
     assert_eq!(code, 0, "{stderr}");
     let out = Command::new(env!("CARGO_BIN_EXE_nexcomp")).args(["inspect", packed.to_str().unwrap()]).output().unwrap();
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("format=NX13 size=17 "), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("format=NX14 size=17 "), "{out:?}");
 }

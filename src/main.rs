@@ -7,7 +7,6 @@ use zeroize::Zeroizing;
 use nexcomp::adaptive;
 use nexcomp::crypto;
 
-const ADAPTIVE_MAGIC: &[u8; 4] = b"NX13";
 /// Formats written by nexcomp 1.5.0 and earlier research builds. Their LZMA,
 /// PPM and BWT streams predate the current codecs and carry no checksums, so
 /// decoding them here could return wrong data; they are refused instead.
@@ -112,7 +111,7 @@ fn decompress_data(data: &[u8]) -> Result<Vec<u8>, NexcompError> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
-    if data.starts_with(ADAPTIVE_MAGIC) {
+    if adaptive::container_format(data).is_some() {
         return Ok(adaptive::try_adaptive_decompress(data)?);
     }
     Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease))
@@ -231,15 +230,15 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
 
             let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
-            if !payload.starts_with(ADAPTIVE_MAGIC) {
+            let Some(format) = adaptive::container_format(&payload) else {
                 return Err(pre_release(&payload).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
-            }
+            };
             let (orig_len, _) = adaptive::parse_blocks(&payload)?;
             let codec = adaptive::codec_summary(&payload)?;
             if show_codec {
                 println!("{codec}");
             } else {
-                println!("format=NX13 size={orig_len} codec={codec}");
+                println!("format={format} size={orig_len} codec={codec}");
             }
         }
     }
