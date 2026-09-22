@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use nexcomp::adaptive;
 use nexcomp::crypto;
@@ -16,8 +17,6 @@ const PRE_RELEASE_MAGICS: [(&[u8; 4], &str); 3] = [(b"NXC\x01", "NXC1"), (b"NX12
 enum NexcompError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    #[error("Truncated payload")]
-    TruncatedPayload,
     #[error("Crypto error: {0}")]
     Crypto(#[from] crypto::CryptoError),
     #[error("Adaptive container error: {0}")]
@@ -26,6 +25,10 @@ enum NexcompError {
     PreRelease(&'static str),
     #[error("Unknown format")]
     UnknownFormat,
+    #[error("encrypted input needs a password: use --password-file, {PASSWORD_ENV} or run in a terminal")]
+    NoPassword,
+    #[error("passwords do not match")]
+    PasswordMismatch,
 }
 
 fn pre_release(data: &[u8]) -> Option<&'static str> {
@@ -45,21 +48,34 @@ enum Commands {
     Compress {
         input: String,
         output: String,
-        #[arg(long)]
-        encrypt: Option<String>,
+        /// Encrypt the output. The password comes from --password-file,
+        /// NEXCOMP_PASSWORD or a prompt; giving it here is deprecated.
+        #[arg(long, num_args = 0..=1, value_name = "PASSWORD")]
+        encrypt: Option<Option<String>>,
+        /// Read the password from this file (trailing newlines are ignored).
+        #[arg(long, value_name = "FILE", requires = "encrypt")]
+        password_file: Option<String>,
         #[arg(long)]
         verbose: bool,
     },
     Decompress {
         input: String,
         output: String,
-        #[arg(long)]
+        /// Deprecated: password of an encrypted input.
+        #[arg(long, value_name = "PASSWORD")]
         decrypt: Option<String>,
+        /// Read the password from this file (trailing newlines are ignored).
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<String>,
     },
     Inspect {
         input: String,
-        #[arg(long)]
+        /// Deprecated: password of an encrypted input.
+        #[arg(long, value_name = "PASSWORD")]
         decrypt: Option<String>,
+        /// Read the password from this file (trailing newlines are ignored).
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<String>,
         #[arg(long)]
         show_codec: bool,
     },
@@ -102,30 +118,46 @@ fn decompress_data(data: &[u8]) -> Result<Vec<u8>, NexcompError> {
     Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease))
 }
 
-// ---------------------------------------------------------------------------
-// Encryption wrapper format for the new adaptive pipeline
-//
-// When --encrypt is used, the on-disk format is:
-//   [4B "NXE2"][4B orig_file_len LE][encrypted blob of adaptive_compress output]
-//
-// The AAD for AEAD is the 8-byte header itself so the sizes are authenticated.
-// ---------------------------------------------------------------------------
+/// Environment variable holding the password when no --password-file is given.
+const PASSWORD_ENV: &str = "NEXCOMP_PASSWORD";
 
-const ENCRYPT_MAGIC: &[u8; 4] = b"NXE2";
-const ENCRYPT_HEADER_LEN: usize = 8;
+/// Resolve the password: the deprecated command-line value, then
+/// --password-file, then NEXCOMP_PASSWORD, then a prompt on the terminal
+/// (asked twice when encrypting).
+fn password(argv: Option<String>, file: Option<&str>, confirm: bool) -> Result<Zeroizing<String>, NexcompError> {
+    if let Some(pw) = argv {
+        eprintln!(
+            "warning: a password on the command line is visible to other users and kept in shell history; \
+             use --password-file, {PASSWORD_ENV} or the prompt"
+        );
+        return Ok(Zeroizing::new(pw));
+    }
+    if let Some(path) = file {
+        let mut pw = Zeroizing::new(fs::read_to_string(path)?);
+        let len = pw.trim_end_matches(['\n', '\r']).len();
+        pw.truncate(len);
+        return Ok(pw);
+    }
+    if let Ok(pw) = std::env::var(PASSWORD_ENV) {
+        return Ok(Zeroizing::new(pw));
+    }
+    if !io::stdin().is_terminal() {
+        return Err(NexcompError::NoPassword);
+    }
+    let pw = Zeroizing::new(rpassword::prompt_password("Password: ")?);
+    if confirm && *pw != *Zeroizing::new(rpassword::prompt_password("Repeat password: ")?) {
+        return Err(NexcompError::PasswordMismatch);
+    }
+    Ok(pw)
+}
 
-/// Strip the encryption wrapper if the file has one, decrypting with `password`.
-fn open_payload(file_data: Vec<u8>, password: Option<String>) -> Result<Vec<u8>, NexcompError> {
-    if !file_data.starts_with(ENCRYPT_MAGIC) {
+/// Strip the encryption wrapper (NXE2 or NXE3) if the file has one.
+fn open_payload(file_data: Vec<u8>, argv: Option<String>, password_file: Option<&str>) -> Result<Vec<u8>, NexcompError> {
+    if !crypto::is_sealed(&file_data) {
         return Ok(file_data);
     }
-    if file_data.len() < ENCRYPT_HEADER_LEN {
-        return Err(NexcompError::TruncatedPayload);
-    }
-    let pw = password
-        .ok_or_else(|| io::Error::other("File is encrypted; provide --decrypt <password>"))?;
-    let (aad, ciphertext) = file_data.split_at(ENCRYPT_HEADER_LEN);
-    Ok(crypto::decrypt(ciphertext, pw.as_bytes(), aad)?)
+    let pw = password(argv, password_file, false)?;
+    Ok(crypto::open(&file_data, pw.as_bytes())?)
 }
 
 fn main() {
@@ -142,26 +174,19 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
             input,
             output,
             encrypt,
+            password_file,
             verbose,
         } => {
             let input_data = fs::read(&input)?;
+            // Ask before compressing, which can take minutes.
+            let pw = encrypt.map(|argv| password(argv, password_file.as_deref(), true)).transpose()?;
             eprintln!("Compressing {} ({} bytes)...", input, input_data.len());
 
             let compressed = compress_data(&input_data, verbose);
 
-            // Optionally encrypt
-            let final_data = if let Some(password) = encrypt {
-                let key = password.as_bytes();
-                // Build a small header as AAD
-                let mut aad = Vec::with_capacity(8);
-                aad.extend_from_slice(ENCRYPT_MAGIC);
-                aad.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
-                let encrypted = crypto::encrypt(&compressed, key, &aad)?;
-                let mut out = aad;
-                out.extend_from_slice(&encrypted);
-                out
-            } else {
-                compressed
+            let final_data = match pw {
+                Some(pw) => crypto::seal(&compressed, pw.as_bytes(), input_data.len() as u64, crypto::DEFAULT_KDF)?,
+                None => compressed,
             };
 
             fs::write(&output, &final_data)?;
@@ -184,11 +209,12 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
             input,
             output,
             decrypt,
+            password_file,
         } => {
             let file_data = fs::read(&input)?;
             eprintln!("Decompressing to {} ...", output);
 
-            let payload = open_payload(file_data, decrypt)?;
+            let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
             let decompressed = decompress_data(&payload)?;
 
@@ -198,11 +224,12 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
         Commands::Inspect {
             input,
             decrypt,
+            password_file,
             show_codec,
         } => {
             let file_data = fs::read(&input)?;
 
-            let payload = open_payload(file_data, decrypt)?;
+            let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
             if !payload.starts_with(ADAPTIVE_MAGIC) {
                 return Err(pre_release(&payload).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));

@@ -43,12 +43,17 @@ nexcomp decompress output.nxc restored.txt
 nexcomp compress input.txt output.nxc --verbose
 ```
 
-**Encrypt/decrypt** (ChaCha20-Poly1305, password-derived key):
+**Encrypt/decrypt** (ChaCha20-Poly1305, key from Argon2id with the costs stored in the file):
 
 ```
-nexcomp compress input.txt output.nxc --encrypt "password"
-nexcomp decompress output.nxc restored.txt --decrypt "password"
+nexcomp compress input.txt output.nxc --encrypt                 # prompts twice
+nexcomp compress input.txt output.nxc --encrypt --password-file pw.txt
+NEXCOMP_PASSWORD=... nexcomp decompress output.nxc restored.txt
 ```
+
+Encrypted input is detected automatically; the password comes from `--password-file`,
+`NEXCOMP_PASSWORD` or a prompt. Passing it as `--encrypt <pw>` / `--decrypt <pw>` still works but
+prints a warning, since it shows up in `ps` and shell history.
 
 **Inspect** a compressed file's metadata:
 
