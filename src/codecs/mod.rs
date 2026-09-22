@@ -11,6 +11,7 @@ pub mod lzma_style;
 pub mod minmask;
 pub mod ppm;
 pub mod rle_huffman;
+pub mod stride_cm;
 
 use thiserror::Error;
 
