@@ -44,6 +44,9 @@ fn fixture_inputs() -> Vec<(&'static str, Vec<u8>)> {
         .flat_map(|i| [[0xE8].as_slice(), &(i * 16).to_le_bytes(), &[0x55, 0x48, 0x89, 0xE5]].concat())
         .collect();
     let multiblock: Vec<u8> = b"nexcomp multi block fixture ".iter().copied().cycle().take(BLOCK_SIZE + 100).collect();
+    // Two blocks where several codecs come out nearly the same size: if the
+    // writer ever depends on the machine, this is where it shows.
+    let zeros = vec![0u8; 2 * BLOCK_SIZE];
     vec![
         ("empty", Vec::new()),
         ("one-byte", vec![0x42]),
@@ -53,6 +56,7 @@ fn fixture_inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("random", random),
         ("exe", exe),
         ("multiblock", multiblock),
+        ("zeros", zeros),
     ]
 }
 

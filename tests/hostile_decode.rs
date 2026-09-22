@@ -7,6 +7,7 @@
 
 use nexcomp::adaptive::{
     adaptive_compress, decompress_to, try_adaptive_decompress, try_adaptive_decompress_limited, CodecId,
+    BLOCK_SIZE,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -137,19 +138,26 @@ impl std::io::Write for Counter {
 
 #[test]
 fn a_file_that_expands_hugely_streams_instead_of_being_assembled() {
-    // 16 MiB of zeros in a few thousand bytes: assembling it in memory first is
-    // what a decompression bomb relies on.
-    let data = vec![0u8; 16 << 20];
-    let compressed = adaptive_compress(&data);
-    assert!(compressed.len() < 8192, "{} bytes", compressed.len());
+    // What a decompression bomb relies on is the decoder allocating its whole
+    // output first. Decoding four blocks of zeros and twelve must therefore
+    // cost the same: the peak follows the block size and the codec, never the
+    // size of the file being restored.
+    let mut peaks = Vec::new();
+    for blocks in [4usize, 12] {
+        let data = vec![0u8; blocks * BLOCK_SIZE];
+        let compressed = adaptive_compress(&data);
+        assert!(compressed.len() < 1024 * blocks, "{} bytes for {blocks} blocks", compressed.len());
 
-    let mut counter = Counter(0);
-    LARGEST.store(0, Ordering::Relaxed);
-    let written = decompress_to(&compressed, &mut counter).expect("streams");
-    let largest = LARGEST.load(Ordering::Relaxed);
-    assert_eq!((written, counter.0), (data.len(), data.len()));
-    assert!(largest <= 8 << 20, "largest allocation was {largest} bytes");
-    assert!(data.len() / compressed.len() > 2000, "the bomb must expand hugely");
+        let mut counter = Counter(0);
+        LARGEST.store(0, Ordering::Relaxed);
+        let written = decompress_to(&compressed, &mut counter).expect("streams");
+        peaks.push(LARGEST.load(Ordering::Relaxed));
+        assert_eq!((written, counter.0), (data.len(), data.len()));
+    }
+    assert_eq!(peaks[0], peaks[1], "the largest allocation grew with the output: {peaks:?}");
+    // A block's own codec may want several times the block: the suffix array
+    // of the BWT is four bytes per byte of block.
+    assert!(peaks[1] <= 20 * BLOCK_SIZE, "largest allocation was {} bytes", peaks[1]);
 }
 
 #[test]
