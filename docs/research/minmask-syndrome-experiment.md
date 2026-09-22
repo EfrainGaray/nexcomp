@@ -211,6 +211,9 @@ block) for both NEXCOMP and MinMask, so the columns are directly comparable. "be
 "residual" are shares of the input bits; "weight / bits" is the residual Hamming weight over
 the input size in bits.
 
+These sizes were measured before the container gained a 4-byte CRC-32 per block; add 4 bytes
+per 4 MiB block to every NEXCOMP, hybrid and MinMask total (228 bytes on Silesia's 57 blocks).
+
 <!-- BEGIN:synth -->
 | exp | dataset | orig | NEXCOMP | MinMask fast | MinMask exh | xz -9e | exh vs NEXCOMP | best family | residual | weight / bits | mask+flag bits | lossless |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|

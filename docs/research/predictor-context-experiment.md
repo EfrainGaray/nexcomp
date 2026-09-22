@@ -77,6 +77,9 @@ Sizes in bytes including container framing; `params` are the detected stride and
 as one more candidate per block, which is exactly what the integrated selector does. `blocks
 won` counts container blocks where the stride CM was smaller.
 
+These sizes were measured before the container gained a 4-byte CRC-32 per block; add 4 bytes
+per 4 MiB block to every NEXCOMP, hybrid and stride CM total (228 bytes on Silesia's 57 blocks).
+
 #### Calgary
 
 | file | orig | NEXCOMP | bpb | stride CM | bpb | params | hybrid | bpb | blocks won | hybrid vs NEXCOMP | CM enc / dec MB/s | lossless |
