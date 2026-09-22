@@ -37,6 +37,8 @@ pub enum AdaptiveError {
     UnknownCodec(u8),
     #[error("{0} block failed to decode")]
     Decode(&'static str),
+    #[error("{0} block decoder panicked on corrupt input")]
+    DecoderPanic(&'static str),
     #[error("size mismatch: expected {expected}, got {got}")]
     SizeMismatch { expected: usize, got: usize },
 }
@@ -327,10 +329,14 @@ pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError>
     let decoded = blocks
         .par_iter()
         .map(|b| {
-            let mut decompressed = decompress_block_adaptive(b.codec, b.data)?;
-            if b.bcj_applied {
-                decompressed = bcj_filter::bcj_decode(&decompressed);
-            }
+            // Some codec internals still assert on impossible input; a corrupt
+            // file must surface as an error, never abort the process.
+            let decode = || -> Result<Vec<u8>, AdaptiveError> {
+                let decompressed = decompress_block_adaptive(b.codec, b.data)?;
+                Ok(if b.bcj_applied { bcj_filter::bcj_decode(&decompressed) } else { decompressed })
+            };
+            let decompressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
+                .map_err(|_| AdaptiveError::DecoderPanic(b.codec.name()))??;
             if decompressed.len() != b.orig_len {
                 return Err(AdaptiveError::SizeMismatch { expected: b.orig_len, got: decompressed.len() });
             }
@@ -492,6 +498,48 @@ mod tests {
 
         let result = std::panic::catch_unwind(|| try_adaptive_decompress(&container));
         assert!(matches!(result, Ok(Err(_))), "corrupt RLE block must return Err");
+    }
+
+    fn single_block_container(codec: CodecId, orig_len: u32, payload: &[u8]) -> Vec<u8> {
+        let mut c = b"NX13".to_vec();
+        c.extend_from_slice(&u64::from(orig_len).to_le_bytes());
+        c.extend_from_slice(&1u32.to_le_bytes());
+        c.push(codec as u8);
+        c.push(0);
+        c.extend_from_slice(&orig_len.to_le_bytes());
+        c.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        c.extend_from_slice(payload);
+        c
+    }
+
+    #[test]
+    fn test_hostile_rle_code_lengths_are_an_error_not_a_panic() {
+        // Mode 0 whose Huffman table only covers the pattern "0": the first 1 bit has no code.
+        let mut mode0 = b"RHF1".to_vec();
+        mode0.push(0);
+        mode0.extend_from_slice(&100u32.to_le_bytes());
+        mode0.push(0);
+        let mut lengths = [0u8; 128];
+        lengths[0] = 0x01;
+        mode0.extend_from_slice(&lengths);
+        mode0.extend_from_slice(&[0xFF; 16]);
+
+        // Mode 1 with a 255-bit value code, beyond the 15-bit limit the encoder uses.
+        let mut mode1 = b"RHF1".to_vec();
+        mode1.push(0);
+        mode1.extend_from_slice(&100u32.to_le_bytes());
+        mode1.push(1);
+        mode1.extend_from_slice(&1u32.to_le_bytes());
+        mode1.extend_from_slice(&1u16.to_le_bytes());
+        mode1.extend_from_slice(&[7, 255]);
+        mode1.extend_from_slice(&[0x11; 128]);
+        mode1.extend_from_slice(&[0xFF; 16]);
+
+        for payload in [mode0, mode1] {
+            let container = single_block_container(CodecId::RleHuffman, 100, &payload);
+            let result = std::panic::catch_unwind(|| try_adaptive_decompress(&container));
+            assert!(matches!(result, Ok(Err(_))), "hostile RLE payload must return Err");
+        }
     }
 
     #[test]

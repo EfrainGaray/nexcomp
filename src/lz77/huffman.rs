@@ -496,19 +496,24 @@ impl<'a> BitReader<'a> {
 
     /// Decode one symbol using a Huffman decode table.
     pub fn read_huffman(&mut self, decode_table: &HuffDecodeTable) -> u16 {
+        self.read_huffman_checked(decode_table)
+            .unwrap_or_else(|| panic!("Huffman decode: bit pattern not covered, max_len={}", decode_table.max_len))
+    }
+
+    /// Like `read_huffman`, but `None` for a bit pattern the table does not
+    /// cover, which only happens with corrupt code lengths.
+    pub fn read_huffman_checked(&mut self, decode_table: &HuffDecodeTable) -> Option<u16> {
         self.ensure_bits(decode_table.max_len);
         let peek = self.current & ((1u32 << decode_table.max_len) - 1);
         let entry = decode_table.lookup[peek as usize];
         let len = entry >> 16;
         if len == 0 {
-            // Fallback: bit-by-bit decode using the codes directly
-            // This shouldn't happen with a correct table
-            panic!("Huffman decode: zero-length code at peek={:b}, max_len={}", peek, decode_table.max_len);
+            return None;
         }
         let sym = entry & 0xFFFF;
         self.current >>= len;
         self.bits_in -= len as u8;
-        sym as u16
+        Some(sym as u16)
     }
 }
 

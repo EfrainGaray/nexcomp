@@ -28,7 +28,12 @@ pub enum RleHuffmanError {
     InvalidPalette,
     #[error("decoded length mismatch: expected {expected}, got {got}")]
     LengthMismatch { expected: usize, got: usize },
+    #[error("corrupt Huffman code")]
+    InvalidCode,
 }
+
+/// Longest code the encoder emits (`build_huffman_codes` caps at 15 bits).
+const MAX_CODE_LEN: u8 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunAnalysis {
@@ -308,7 +313,7 @@ fn decode_mode0(payload: &[u8]) -> Result<Vec<u8>, RleHuffmanError> {
     let mut br = BitReader::new(huff_data);
     let mut out = Vec::with_capacity(orig_len);
     for _ in 0..orig_len {
-        out.push(br.read_huffman(&decode_table) as u8);
+        out.push(br.read_huffman_checked(&decode_table).ok_or(RleHuffmanError::InvalidCode)? as u8);
     }
     Ok(out)
 }
@@ -409,6 +414,9 @@ fn decode_mode1(payload: &[u8]) -> Result<Vec<u8>, RleHuffmanError> {
     }
     let val_cl = &payload[pos..pos + num_unique];
     pos += num_unique;
+    if val_cl.iter().any(|&l| l > MAX_CODE_LEN) {
+        return Err(RleHuffmanError::InvalidCode);
+    }
 
     let val_codes = rebuild_canonical_codes(val_cl, num_unique);
     let val_dt = build_decode_table(&val_codes, num_unique);
@@ -424,10 +432,10 @@ fn decode_mode1(payload: &[u8]) -> Result<Vec<u8>, RleHuffmanError> {
 
     let mut out = Vec::with_capacity(orig_len);
     for _ in 0..num_runs {
-        let vidx = br.read_huffman(&val_dt) as usize;
+        let vidx = br.read_huffman_checked(&val_dt).ok_or(RleHuffmanError::InvalidCode)? as usize;
         let value = unique_vals[vidx];
 
-        let class = br.read_huffman(&len_dt);
+        let class = br.read_huffman_checked(&len_dt).ok_or(RleHuffmanError::InvalidCode)?;
         let (base_val, extra_bits) = decode_length_class(class);
         let extra = if extra_bits > 0 {
             br.read_bits(extra_bits)
