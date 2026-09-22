@@ -6,6 +6,7 @@ use crate::codecs::bwt_codec;
 use crate::codecs::delta_ans;
 use crate::codecs::lzma_style;
 use crate::codecs::ppm;
+use crate::codecs::stride_cm;
 use crate::codecs::rle_huffman;
 use crate::lz77::{self, huffman, Lz77Encoder};
 use rayon::prelude::*;
@@ -22,6 +23,7 @@ pub enum CodecId {
     Passthrough = 4,
     BwtRans = 5,
     Ppm = 6,
+    StrideCm = 7,
 }
 
 /// Errors from parsing or decoding the NX13 container.
@@ -53,6 +55,7 @@ impl CodecId {
             4 => Some(Self::Passthrough),
             5 => Some(Self::BwtRans),
             6 => Some(Self::Ppm),
+            7 => Some(Self::StrideCm),
             _ => None,
         }
     }
@@ -66,6 +69,7 @@ impl CodecId {
             Self::Passthrough => "store",
             Self::BwtRans => "bwt",
             Self::Ppm => "ppm",
+            Self::StrideCm => "stride-cm",
         }
     }
 }
@@ -106,6 +110,7 @@ fn encode_with(codec: CodecId, data: &[u8]) -> Option<Vec<u8>> {
         CodecId::Passthrough => Some(data.to_vec()),
         CodecId::BwtRans => Some(bwt_codec::bwt_compress(data)),
         CodecId::Ppm => Some(ppm::ppm_compress(data)),
+        CodecId::StrideCm => Some(stride_cm::encode(data)),
     }
 }
 
@@ -140,6 +145,12 @@ fn select_best_codec(data: &[u8]) -> (Vec<u8>, CodecId) {
     };
     if try_bwt {
         candidates.push(CodecId::BwtRans);
+    }
+
+    // Stride-aware context mixing wins on numeric, image and table data and
+    // never won a text block in the corpora (winners measured at <= 0.79 ASCII).
+    if metrics.ascii_ratio <= 0.85 && data.len() >= 256 {
+        candidates.push(CodecId::StrideCm);
     }
 
     // Try PPM for text-heavy blocks where it can beat BWT and LZMA
@@ -224,6 +235,7 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Result<Vec<u8>,
         }
         CodecId::BwtRans => bwt_codec::bwt_decompress(data),
         CodecId::Ppm => ppm::ppm_decompress(data),
+        CodecId::StrideCm => stride_cm::decode(data).ok_or(AdaptiveError::Decode("stride-cm"))?,
         CodecId::Passthrough => data.to_vec(),
     })
 }
@@ -540,6 +552,15 @@ mod tests {
             let result = std::panic::catch_unwind(|| try_adaptive_decompress(&container));
             assert!(matches!(result, Ok(Err(_))), "hostile RLE payload must return Err");
         }
+    }
+
+    #[test]
+    fn test_numeric_block_selects_stride_cm() {
+        let data: Vec<u8> = (0..20_000u32).flat_map(|i| (5 * i + 1000).to_le_bytes()).collect();
+        let compressed = adaptive_compress(&data);
+        let (_, blocks) = parse_blocks(&compressed).unwrap();
+        assert_eq!(blocks[0].codec, CodecId::StrideCm);
+        assert_eq!(adaptive_decompress(&compressed), data);
     }
 
     #[test]

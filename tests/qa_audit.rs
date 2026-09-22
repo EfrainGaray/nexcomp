@@ -730,12 +730,13 @@ fn qa_codec_id_from_u8() {
         CodecId::Passthrough,
         CodecId::BwtRans,
         CodecId::Ppm,
+        CodecId::StrideCm,
     ] {
         assert_eq!(CodecId::from_u8(codec as u8), Some(codec));
     }
 
     // Unknown IDs are rejected instead of silently mapping to Passthrough
-    assert_eq!(CodecId::from_u8(7), None);
+    assert_eq!(CodecId::from_u8(8), None);
     assert_eq!(CodecId::from_u8(255), None);
 }
 
