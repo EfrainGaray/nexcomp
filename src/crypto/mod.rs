@@ -15,7 +15,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::OsRng, TryRngCore};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -36,6 +36,8 @@ pub enum CryptoError {
     KeyTooShort,
     #[error("key derivation parameters out of range")]
     KdfParamsOutOfRange,
+    #[error("the operating system random source failed: {0}")]
+    RandomSource(String),
     #[error("unknown key derivation function id {0}")]
     UnknownKdf(u8),
     #[error("encrypted file header is truncated")]
@@ -111,8 +113,8 @@ pub fn encrypt_with(
     // Generate random salt and nonce
     let mut salt = [0u8; 32];
     let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut nonce_bytes);
+    OsRng.try_fill_bytes(&mut salt).map_err(|e| CryptoError::RandomSource(e.to_string()))?;
+    OsRng.try_fill_bytes(&mut nonce_bytes).map_err(|e| CryptoError::RandomSource(e.to_string()))?;
 
     let key = derive_key(master_key, &salt, kdf)?;
     let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())

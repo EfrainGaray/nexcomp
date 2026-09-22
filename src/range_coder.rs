@@ -248,9 +248,9 @@ impl<'a> RangeDecoder<'a> {
 
     #[test]
     fn roundtrip_random_bits() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 10_000;
-        let bits: Vec<u32> = (0..n).map(|_| rng.gen_range(0..2)).collect();
+        let bits: Vec<u32> = (0..n).map(|_| rng.random_range(0..2)).collect();
 
         // Encode
         let mut enc = RangeEncoder::new();
@@ -272,11 +272,11 @@ impl<'a> RangeDecoder<'a> {
     #[test]
     fn roundtrip_skewed_bits() {
         // Test with highly skewed probabilities
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 12_000;
         // 90 % zeros
         let bits: Vec<u32> = (0..n)
-            .map(|_| if rng.gen_range(0..10) < 9 { 0 } else { 1 })
+            .map(|_| if rng.random_range(0..10) < 9 { 0 } else { 1 })
             .collect();
 
         let mut enc = RangeEncoder::new();
@@ -296,12 +296,12 @@ impl<'a> RangeDecoder<'a> {
 
     #[test]
     fn roundtrip_variable_probs_10k_bits() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let initial_probs: Vec<Prob> = (0..64)
-            .map(|_| rng.gen_range(1..(1 << PROB_BITS) as u16))
+            .map(|_| rng.random_range(1..(1 << PROB_BITS) as u16))
             .collect();
         let mut probs = initial_probs.clone();
-        let bits: Vec<u32> = (0..10_000).map(|_| rng.gen_range(0..2)).collect();
+        let bits: Vec<u32> = (0..10_000).map(|_| rng.random_range(0..2)).collect();
 
         let mut enc = RangeEncoder::new();
         for (i, &bit) in bits.iter().enumerate() {
@@ -321,9 +321,9 @@ impl<'a> RangeDecoder<'a> {
 
     #[test]
     fn roundtrip_bytes() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 500;
-        let bytes: Vec<u8> = (0..n).map(|_| rng.gen()).collect();
+        let bytes: Vec<u8> = (0..n).map(|_| rng.random()).collect();
 
         let mut enc = RangeEncoder::new();
         let mut probs = [PROB_INIT; 255];
@@ -342,11 +342,11 @@ impl<'a> RangeDecoder<'a> {
 
     #[test]
     fn roundtrip_direct_bits() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let values: Vec<(u32, u32)> = (0..200)
             .map(|_| {
-                let bits = rng.gen_range(1..=26);
-                let val = rng.gen::<u32>() & ((1u32 << bits) - 1);
+                let bits = rng.random_range(1..=26);
+                let val = rng.random::<u32>() & ((1u32 << bits) - 1);
                 (val, bits)
             })
             .collect();
@@ -367,15 +367,15 @@ impl<'a> RangeDecoder<'a> {
     #[test]
     fn roundtrip_mixed() {
         // Mix adaptive bits, direct bits, and bytes in one stream.
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let mut enc = RangeEncoder::new();
         let mut prob = PROB_INIT;
         let mut byte_probs = [PROB_INIT; 255];
 
-        let adaptive_bits: Vec<u32> = (0..500).map(|_| rng.gen_range(0..2)).collect();
-        let direct_val: u32 = rng.gen::<u32>() & 0xFFFF;
-        let plain_bytes: Vec<u8> = (0..100).map(|_| rng.gen()).collect();
+        let adaptive_bits: Vec<u32> = (0..500).map(|_| rng.random_range(0..2)).collect();
+        let direct_val: u32 = rng.random::<u32>() & 0xFFFF;
+        let plain_bytes: Vec<u8> = (0..100).map(|_| rng.random()).collect();
 
         for &b in &adaptive_bits {
             enc.encode_bit(&mut prob, b);

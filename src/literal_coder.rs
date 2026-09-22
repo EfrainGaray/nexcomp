@@ -144,9 +144,9 @@ mod tests {
 
     #[test]
     fn roundtrip_normal_literals() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 1000;
-        let data: Vec<u8> = (0..n).map(|_| rng.gen()).collect();
+        let data: Vec<u8> = (0..n).map(|_| rng.random()).collect();
 
         let mut coder = LiteralCoder::new();
         let mut enc = RangeEncoder::new();
@@ -172,10 +172,10 @@ mod tests {
 
     #[test]
     fn roundtrip_matched_literals() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 500;
-        let data: Vec<u8> = (0..n).map(|_| rng.gen()).collect();
-        let match_bytes: Vec<u8> = (0..n).map(|_| rng.gen()).collect();
+        let data: Vec<u8> = (0..n).map(|_| rng.random()).collect();
+        let match_bytes: Vec<u8> = (0..n).map(|_| rng.random()).collect();
 
         let mut coder = LiteralCoder::new();
         let mut enc = RangeEncoder::new();
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn roundtrip_mixed_normal_and_matched() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let n = 600;
 
         #[derive(Clone)]
@@ -228,9 +228,9 @@ mod tests {
         let ops: Vec<Op> = (0..n)
             .map(|_| {
                 if rng.gen_bool(0.5) {
-                    Op::Normal(rng.gen())
+                    Op::Normal(rng.random())
                 } else {
-                    Op::Matched(rng.gen(), rng.gen())
+                    Op::Matched(rng.random(), rng.random())
                 }
             })
             .collect();

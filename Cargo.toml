@@ -10,7 +10,7 @@ license = "MIT"
 thiserror = "1.0"
 chacha20poly1305 = "0.10"
 clap = { version = "4.4", features = ["derive"] }
-rand = "0.8"
+rand = "0.9"
 rayon = "1.10"
 argon2 = "0.5"
 rpassword = "7"
