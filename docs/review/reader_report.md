@@ -1,7 +1,7 @@
 # Reader Report
 
 **Date**: 2026-03-29
-**Reviewer**: Automated critical reader (Claude)
+**Reviewer**: critical reading pass
 **Scope**: docs/paper/nexcomp_paper.md, README.md, cross-checked against src/main.rs and test/benchmark data
 
 ---

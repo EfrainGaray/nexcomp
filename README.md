@@ -2,18 +2,27 @@
 
 Adaptive lossless compressor that selects the best codec per block.
 
-**WARNING: This is experimental software.** NEXCOMP is a research compressor, not production-hardened. APIs, file formats, and compression behavior may change between versions. Use at your own risk.
+**WARNING: This is experimental software.** NEXCOMP is a research compressor, not
+production-hardened. From 1.6.0 on, a release may stop writing a file format but never stops
+reading one an earlier release wrote ([docs/FORMAT.md](docs/FORMAT.md)); everything else, the CLI
+and the library API included, can still change between versions.
 
 ## Results
 
-| Corpus     | NEXCOMP (bpb) | bzip2 (bpb) | gzip (bpb) |
-|------------|---------------|-------------|------------|
-| Calgary    | 2.072         | 2.109       | 2.592      |
-| Canterbury | 1.278         | 1.545       | 2.072      |
-| Silesia    | 2.022         | 2.057       | --         |
+Sizes in bytes; whole files, framing and the per-file hash included. Every file was compressed
+and decompressed on its own, and only recorded once the restored bytes hashed to the original.
 
-Decompression throughput: ~50 MB/s (bzip2: ~17 MB/s).
-Compression throughput: ~1--3 MB/s.
+| corpus | original | NEXCOMP | bpb | xz | bzip2 |
+|---|---|---|---|---|---|
+| calgary | 3141622 | 744025 | 1.8946 | 843828 | 828347 |
+| canterbury | 2810784 | 406444 | 1.1568 | 493080 | 542710 |
+
+Measured by `scripts/benchmark.sh`; environment and per-file numbers in
+[`bench/results/20260922T190350Z-darwin-x86_64.md`](bench/results/20260922T190350Z-darwin-x86_64.md).
+
+Silesia and enwik8 are measured in their own run, since they take hours; each run writes its own
+artifact to `bench/results/`, and the table above is generated from one of them by
+`scripts/readme_table.sh`.
 
 ## Installation
 
@@ -84,15 +93,22 @@ Input -> [Block Splitter] -> [Adaptive Selector] -> Best codec per block -> Outp
 | 4  | store       | Passthrough (incompressible data)  |
 | 5  | bwt         | Burrows-Wheeler + rANS             |
 | 6  | ppm         | Prediction by partial matching     |
+| 7  | stride-cm   | Context mixing with stride, record and plane contexts |
+
+Each block also records a CRC-32, and the file a BLAKE3 of the whole original.
+The container and the encrypted wrapper are specified in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## Benchmarks
 
-To reproduce the benchmark numbers:
+```
+scripts/corpora.sh                 # download and verify against bench/manifest.tsv
+scripts/benchmark.sh               # writes bench/results/<timestamp>-<os>-<arch>.{tsv,md}
+```
 
-```
-scripts/download_corpora.sh
-scripts/benchmark.sh
-```
+Every result artifact records the commit, the full `rustc -Vv`, the machine, the thread count and
+the version of every tool it ran, and each file is only recorded once the restored bytes hash to
+the original. The corpora are pinned by SHA-256 in `bench/manifest.tsv`; Calgary is the standard
+14 files.
 
 ## Components
 
@@ -105,22 +121,29 @@ scripts/benchmark.sh
 | `grammar/`      | Re-Pair grammar compression          |
 | `lz77/`         | LZ77 encoder + Huffman backend       |
 | `transform/`    | Domain-specific reversible transforms|
-| `crypto/`       | ChaCha20-Poly1305 encryption         |
+| `crypto/`       | ChaCha20-Poly1305 with Argon2id      |
 | `neural/`       | Experimental neural context model    |
 
 ## Limitations
 
-- **Compression speed is slow** (~1--3 MB/s). The adaptive selector trial-compresses each block with every codec.
-- **Silesia gap.** On the Silesia corpus NEXCOMP only narrowly beats bzip2 and does not yet match brotli or xz.
-- **Experimental format.** The file format is not stabilized. Files written by one version may not be readable by future versions.
+- **Compression is slow.** The selector trial-compresses each block with several codecs, and the
+  context-mixing codecs are the slowest of them. Decompression of a block costs about what its
+  codec cost to encode, so the context-mixing blocks are the slow ones there too.
+- **The ratio gap that matters** is against the context-mixing leaders (paq8px, cmix), not against
+  the general-purpose tools. On Silesia it is concentrated in `mozilla`, `webster` and `samba`.
+- **Memory.** Compression holds several blocks and their candidates at once; `RAYON_NUM_THREADS`
+  bounds it. Decompression streams block by block.
+- **Young format.** NX14 and NXE3 are new in 1.6.0. From here on a release may stop writing a
+  format but never stops reading one an earlier release wrote; the pre-release `NXC\x01`, `NX12`
+  and `NXE1` files are refused, see [docs/FORMAT.md](docs/FORMAT.md).
 
 ## Tests
 
 ```
-cargo test --release
+cargo test --release                        # the suite, including the format fixtures
+NEXCOMP_MUTATIONS=5000 cargo test --release --test mutation_decode
+cargo +nightly fuzz run decompress          # also: block, codec-roundtrip, roundtrip
 ```
-
-375 tests passed, 0 failed.
 
 ## License
 

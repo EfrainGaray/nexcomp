@@ -116,6 +116,7 @@ fi
     echo "kernel        $(uname -srv)"
     echo "threads       ${RAYON_NUM_THREADS:-$cores} (RAYON_NUM_THREADS)"
     echo "corpora       $CORPORA_DIR, verified against bench/manifest.tsv"
+    echo "load          $(uptime | sed 's/.*load averages*: //') (1, 5, 15 min at start; other work on the machine shows up here)"
     for tool in $TOOLS; do printf '%-13s %s\n' "$tool" "$(tool_version "$tool")"; done
     echo '```'
     echo

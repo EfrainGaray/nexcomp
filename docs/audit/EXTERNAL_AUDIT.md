@@ -1,5 +1,8 @@
 # NEXCOMP — External Audit Brief
 
+*The audit this brief asked for came back with twelve findings; the answer to each
+one is in [RESPONSE.md](RESPONSE.md). This brief is kept as it was sent.*
+
 ## 1. What NEXCOMP is trying to be
 
 NEXCOMP is a lossless compressor whose single goal is **the best compression ratio on the
