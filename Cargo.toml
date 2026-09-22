@@ -15,8 +15,10 @@ rayon = "1.10"
 argon2 = "0.5"
 rpassword = "7"
 zeroize = "1"
+blake3 = "1"
 
 [dev-dependencies]
+blake3 = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

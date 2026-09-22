@@ -306,6 +306,9 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8], expected_len: usiz
 /// Input is split into independent blocks of this size; each picks its own codec.
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
+/// Magic of the container this build writes.
+pub const CONTAINER_MAGIC: &[u8; 4] = b"NX13";
+
 const FILE_HEADER_LEN: usize = 16;
 const BLOCK_HEADER_LEN: usize = 14;
 
@@ -338,7 +341,7 @@ pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
 
     let payload_len: usize = blocks.iter().map(|b| BLOCK_HEADER_LEN + b.compressed.len()).sum();
     let mut out = Vec::with_capacity(FILE_HEADER_LEN + payload_len);
-    out.extend_from_slice(b"NX13");
+    out.extend_from_slice(CONTAINER_MAGIC);
     out.extend_from_slice(&(data.len() as u64).to_le_bytes());
     out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
     for (block, chunk) in blocks.iter().zip(data.chunks(BLOCK_SIZE)) {
