@@ -43,6 +43,12 @@ pub enum AdaptiveError {
     DecoderPanic(&'static str),
     #[error("block checksum mismatch: the data is corrupt")]
     ChecksumMismatch,
+    #[error("{0} block declares lengths that do not match the container")]
+    LengthMismatch(&'static str),
+    #[error("block layout does not match the declared file length")]
+    BadLayout,
+    #[error("output of {declared} bytes exceeds the limit of {limit}")]
+    OutputLimit { declared: usize, limit: usize },
     #[error("size mismatch: expected {expected}, got {got}")]
     SizeMismatch { expected: usize, got: usize },
 }
@@ -90,9 +96,9 @@ fn compress_baseline(data: &[u8]) -> Vec<u8> {
     best
 }
 
-fn decompress_baseline(data: &[u8]) -> Result<Vec<u8>, AdaptiveError> {
+fn decompress_baseline(data: &[u8], expected_len: usize) -> Result<Vec<u8>, AdaptiveError> {
     let tokens = huffman::huffman_decode_blocked(data);
-    lz77::lz77_decode(&tokens).map_err(|_| AdaptiveError::Decode("lz77huf"))
+    lz77::lz77_decode_with_limit(&tokens, expected_len).map_err(|_| AdaptiveError::Decode("lz77huf"))
 }
 
 /// Result of adaptive compression, including whether BCJ pre-filter was applied.
@@ -222,10 +228,65 @@ pub fn compress_block_adaptive_pub(data: &[u8]) -> (Vec<u8>, CodecId) {
     (result.compressed, result.codec)
 }
 
-/// Decompress a block given its codec ID.
-pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Result<Vec<u8>, AdaptiveError> {
+/// Check every length a codec's payload declares against the block length
+/// from the container, before the codec runs: a corrupt block must not make a
+/// decoder allocate or loop beyond what the block itself could produce.
+fn check_declared_lengths(codec: CodecId, data: &[u8], expected: usize) -> Result<(), AdaptiveError> {
+    let u32_at = |pos: usize| -> Result<usize, AdaptiveError> {
+        read_le::<4>(data, pos).map(|b| u32::from_le_bytes(b) as usize)
+    };
+    let consistent = match codec {
+        CodecId::Passthrough => data.len() == expected,
+        // These payloads start with the block length.
+        CodecId::LzmaStyle | CodecId::Ppm | CodecId::BwtRans | CodecId::StrideCm => u32_at(0)? == expected,
+        // [magic 4][flags 1][length 4][mode 1], mode 1 then [runs 4]; every run is >= 1 byte.
+        CodecId::RleHuffman => {
+            u32_at(5)? == expected && (data.get(9) != Some(&1) || u32_at(10)? <= expected)
+        }
+        // [mode 1][lanes 1][length 4], then per lane [symbols 4][counts 1024][coded 4][coded bytes];
+        // lane l holds every lanes-th byte starting at l.
+        CodecId::DeltaAns => {
+            let lanes = usize::from(*data.get(1).ok_or(AdaptiveError::Truncated)?);
+            let mut pos = 6;
+            let mut ok = u32_at(2)? == expected && lanes > 0;
+            for lane in 0..lanes {
+                let symbols = u32_at(pos)?;
+                let coded = u32_at(pos + 4 + 1024)?;
+                pos += 4 + 1024 + 4;
+                ok &= symbols == (expected + lanes - 1 - lane) / lanes;
+                if symbols > 0 {
+                    pos = pos.checked_add(coded).filter(|&p| p <= data.len()).ok_or(AdaptiveError::Truncated)?;
+                }
+            }
+            ok
+        }
+        // [tokens 4][blocks 4], then per block [tokens 4][bytes 4][bytes]; every token is >= 1 byte.
+        CodecId::Lz77Huffman => {
+            let tokens = u32_at(0)?;
+            let mut pos = 8;
+            let mut sum = 0usize;
+            for _ in 0..u32_at(4)? {
+                sum = sum.saturating_add(u32_at(pos)?);
+                pos = (pos + 8)
+                    .checked_add(u32_at(pos + 4)?)
+                    .filter(|&p| p <= data.len())
+                    .ok_or(AdaptiveError::Truncated)?;
+            }
+            tokens <= expected && sum == tokens
+        }
+    };
+    if consistent {
+        Ok(())
+    } else {
+        Err(AdaptiveError::LengthMismatch(codec.name()))
+    }
+}
+
+/// Decompress a block given its codec ID and its length from the container.
+pub fn decompress_block_adaptive(codec: CodecId, data: &[u8], expected_len: usize) -> Result<Vec<u8>, AdaptiveError> {
+    check_declared_lengths(codec, data, expected_len)?;
     Ok(match codec {
-        CodecId::Lz77Huffman => decompress_baseline(data)?,
+        CodecId::Lz77Huffman => decompress_baseline(data, expected_len)?,
         CodecId::LzmaStyle => {
             lzma_style::decode_block(data).map_err(|_| AdaptiveError::Decode("lzma"))?
         }
@@ -322,14 +383,22 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
         return Err(AdaptiveError::Truncated);
     }
 
+    // The writer cuts every block at BLOCK_SIZE; only the last may be shorter.
+    if block_count != orig_len.div_ceil(BLOCK_SIZE) {
+        return Err(AdaptiveError::BadLayout);
+    }
+
     let mut blocks = Vec::with_capacity(block_count);
     let mut pos = FILE_HEADER_LEN;
-    for _ in 0..block_count {
+    for index in 0..block_count {
         let [codec_id, bcj] = read_le::<2>(payload, pos)?;
         let codec = CodecId::from_u8(codec_id).ok_or(AdaptiveError::UnknownCodec(codec_id))?;
         let block_orig = u32::from_le_bytes(read_le(payload, pos + 2)?) as usize;
         let comp_len = u32::from_le_bytes(read_le(payload, pos + 6)?) as usize;
         let crc = u32::from_le_bytes(read_le(payload, pos + 10)?);
+        if block_orig != BLOCK_SIZE.min(orig_len - index * BLOCK_SIZE) {
+            return Err(AdaptiveError::BadLayout);
+        }
         pos += BLOCK_HEADER_LEN;
         let end = pos.checked_add(comp_len).ok_or(AdaptiveError::Truncated)?;
         let data = payload.get(pos..end).ok_or(AdaptiveError::Truncated)?;
@@ -359,31 +428,35 @@ pub fn codec_summary(compressed: &[u8]) -> Result<String, AdaptiveError> {
 
 /// Full adaptive decompress: wire format -> data
 pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError> {
+    try_adaptive_decompress_limited(payload, usize::MAX)
+}
+
+/// Like [`try_adaptive_decompress`], but refuses files that declare more than
+/// `max_output` bytes before allocating anything for them.
+pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Result<Vec<u8>, AdaptiveError> {
     let (orig_len, blocks) = parse_blocks(payload)?;
-    let decoded = blocks
-        .par_iter()
-        .map(|b| {
-            // Some codec internals still assert on impossible input; a corrupt
-            // file must surface as an error, never abort the process.
-            let decode = || -> Result<Vec<u8>, AdaptiveError> {
-                let decompressed = decompress_block_adaptive(b.codec, b.data)?;
-                Ok(if b.bcj_applied { bcj_filter::bcj_decode(&decompressed) } else { decompressed })
-            };
-            let decompressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
-                .map_err(|_| AdaptiveError::DecoderPanic(b.codec.name()))??;
-            if decompressed.len() != b.orig_len {
-                return Err(AdaptiveError::SizeMismatch { expected: b.orig_len, got: decompressed.len() });
-            }
-            if crc32(&decompressed) != b.crc {
-                return Err(AdaptiveError::ChecksumMismatch);
-            }
-            Ok(decompressed)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let out = decoded.concat();
-    if out.len() != orig_len {
-        return Err(AdaptiveError::SizeMismatch { expected: orig_len, got: out.len() });
+    if orig_len > max_output {
+        return Err(AdaptiveError::OutputLimit { declared: orig_len, limit: max_output });
     }
+    let mut out = vec![0u8; orig_len];
+    out.par_chunks_mut(BLOCK_SIZE).zip(blocks.par_iter()).try_for_each(|(dst, b)| {
+        // Some codec internals still assert on impossible input; a corrupt
+        // file must surface as an error, never abort the process.
+        let decode = || -> Result<Vec<u8>, AdaptiveError> {
+            let decompressed = decompress_block_adaptive(b.codec, b.data, b.orig_len)?;
+            Ok(if b.bcj_applied { bcj_filter::bcj_decode(&decompressed) } else { decompressed })
+        };
+        let decompressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
+            .map_err(|_| AdaptiveError::DecoderPanic(b.codec.name()))??;
+        if decompressed.len() != b.orig_len {
+            return Err(AdaptiveError::SizeMismatch { expected: b.orig_len, got: decompressed.len() });
+        }
+        if crc32(&decompressed) != b.crc {
+            return Err(AdaptiveError::ChecksumMismatch);
+        }
+        dst.copy_from_slice(&decompressed);
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -634,6 +707,6 @@ mod tests {
 
         let mut wrong_len = good;
         wrong_len[4..12].copy_from_slice(&999_999u64.to_le_bytes());
-        assert!(matches!(try_adaptive_decompress(&wrong_len), Err(AdaptiveError::SizeMismatch { .. })));
+        assert!(matches!(try_adaptive_decompress(&wrong_len), Err(AdaptiveError::BadLayout)));
     }
 }

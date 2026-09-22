@@ -751,7 +751,7 @@ fn qa_decompress_fallback_behavior() {
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
     for codec in [CodecId::LzmaStyle, CodecId::DeltaAns] {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            decompress_block_adaptive(codec, &garbage)
+            decompress_block_adaptive(codec, &garbage, garbage.len())
         }));
         if let Ok(decoded) = result {
             assert!(decoded.is_err(), "{} decoded garbage without error", codec.name());

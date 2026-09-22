@@ -16,6 +16,7 @@ pub mod serial;
 pub mod types;
 
 pub use decoder::decode as lz77_decode;
+pub use decoder::decode_with_limit as lz77_decode_with_limit;
 pub use decoder::Lz77DecodeError;
 pub use encoder::{EncoderStats, Lz77Encoder};
 pub use serial::{deserialize, serialize, Lz77SerialError};

@@ -443,6 +443,9 @@ fn decode_mode1(payload: &[u8]) -> Result<Vec<u8>, RleHuffmanError> {
             0
         };
         let length = (base_val + extra + 1) as usize; // +1 because we encoded length-1
+        if out.len() + length > orig_len {
+            return Err(RleHuffmanError::LengthMismatch { expected: orig_len, got: out.len() + length });
+        }
 
         out.resize(out.len() + length, value);
     }
