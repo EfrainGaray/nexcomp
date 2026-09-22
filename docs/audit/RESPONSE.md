@@ -133,7 +133,7 @@ Silesia binaries, where an ungated run costs minutes per block) are in
 
 ### F-09 — no CI, fuzzing or cross-architecture validation — fixed
 
-`.github/workflows/ci.yml` runs on x86_64 and aarch64: build, clippy, the full
+The first green run is 35774376267. `.github/workflows/ci.yml` runs on x86_64 and aarch64: build, clippy, the full
 suite (which decodes the committed fixtures and checks the writer still produces
 them), a longer mutation run, and a CLI round trip including encryption. Each
 architecture then decodes the files the other one wrote. Two more jobs run the
@@ -174,7 +174,7 @@ the artifact they were generated from.
 | A. malformed NX13 never allocates above a configured maximum | met: `tests/hostile_decode.rs`, `tests/mutation_decode.rs`, fuzz targets |
 | B. malformed legacy NXC never allocates above a configured maximum | met by refusing the legacy formats (F-02) |
 | C. 24 h of fuzzing with zero panic, abort or hang | partly: 30 minutes per target with no crash; the 24 h run is not done |
-| D. files written on x86 decode on ARM and the other way round | in CI from this merge on; both architectures also check they write the same bytes |
+| D. files written on x86 decode on ARM and the other way round | met: CI run 35774376267 decoded each architecture's files on the other, and the fixtures the writer produced on aarch64 were byte-identical to the committed x86_64 ones |
 | E. standard benchmark manifests reproduce byte for byte | met: `bench/manifest.tsv` and the result artifacts |
 
 ## Not done, on purpose
