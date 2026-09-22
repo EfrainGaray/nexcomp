@@ -20,7 +20,7 @@ enum NexcompError {
     Crypto(#[from] crypto::CryptoError),
     #[error("Adaptive container error: {0}")]
     Adaptive(#[from] adaptive::AdaptiveError),
-    #[error("pre-release {0} file: read it with nexcomp 1.5.0 or earlier")]
+    #[error("pre-release {0} file: docs/FORMAT.md names the last commit that reads it")]
     PreRelease(&'static str),
     #[error("Unknown format")]
     UnknownFormat,
