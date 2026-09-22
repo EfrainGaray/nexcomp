@@ -11,6 +11,7 @@ use nexcomp::adaptive::{
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 struct Tracking;
 
@@ -44,6 +45,14 @@ static ALLOCATOR: Tracking = Tracking;
 
 /// Largest single allocation any decode below may make.
 const ALLOC_LIMIT: usize = 64 << 20;
+
+/// The allocator is global and tests in a binary run in parallel, so a test
+/// that measures allocations has to be the only one allocating.
+static MEASURING: Mutex<()> = Mutex::new(());
+
+fn measuring() -> MutexGuard<'static, ()> {
+    MEASURING.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn mutations() -> usize {
     std::env::var("NEXCOMP_MUTATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(300)
@@ -146,6 +155,7 @@ fn base_payloads() -> Vec<(CodecId, Vec<u8>, Vec<u8>)> {
 
 #[test]
 fn corrupt_block_payloads_never_panic() {
+    let _measuring = measuring();
     let n = mutations();
     let mut failures = Vec::new();
     for (codec, original, payload) in base_payloads() {
@@ -166,6 +176,7 @@ fn corrupt_block_payloads_never_panic() {
 
 #[test]
 fn corrupt_containers_never_panic() {
+    let _measuring = measuring();
     let n = mutations();
     let mut failures = Vec::new();
     // A text block, a numeric block and a BCJ block, framed by the real writer.

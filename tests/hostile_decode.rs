@@ -11,6 +11,7 @@ use nexcomp::adaptive::{
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 struct Tracking;
 
@@ -44,6 +45,14 @@ static ALLOCATOR: Tracking = Tracking;
 
 /// Largest single allocation a 1-byte hostile block may cause.
 const LIMIT: usize = 64 << 20;
+
+/// The allocator is global and tests in a binary run in parallel, so a test
+/// that measures allocations has to be the only one allocating.
+static MEASURING: Mutex<()> = Mutex::new(());
+
+fn measuring() -> MutexGuard<'static, ()> {
+    MEASURING.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// An NX13 file holding one block of `block_len` declared bytes.
 fn container(file_len: u64, block_len: u32, codec: u8, payload: &[u8]) -> Vec<u8> {
@@ -104,6 +113,7 @@ fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
 
 #[test]
 fn hostile_blocks_are_rejected_without_large_allocations() {
+    let _measuring = measuring();
     for (name, file) in hostile_cases() {
         LARGEST.store(0, Ordering::Relaxed);
         let result = std::panic::catch_unwind(|| try_adaptive_decompress(&file));
@@ -115,6 +125,7 @@ fn hostile_blocks_are_rejected_without_large_allocations() {
 
 #[test]
 fn output_limit_refuses_files_that_expand_beyond_it() {
+    let _measuring = measuring();
     let data = vec![0u8; 12 << 20];
     let compressed = adaptive_compress(&data);
     assert!(compressed.len() < 4096);
@@ -138,6 +149,7 @@ impl std::io::Write for Counter {
 
 #[test]
 fn a_file_that_expands_hugely_streams_instead_of_being_assembled() {
+    let _measuring = measuring();
     // What a decompression bomb relies on is the decoder allocating its whole
     // output first. Decoding four blocks of zeros and twelve must therefore
     // cost the same: the peak follows the block size and the codec, never the
@@ -162,6 +174,7 @@ fn a_file_that_expands_hugely_streams_instead_of_being_assembled() {
 
 #[test]
 fn streaming_and_in_memory_decoding_agree() {
+    let _measuring = measuring();
     let data: Vec<u8> = (0..(5 << 20) as u32).flat_map(|i| (i % 251).to_le_bytes()).take(5 << 20).collect();
     let compressed = adaptive_compress(&data);
     let mut streamed = Vec::new();
