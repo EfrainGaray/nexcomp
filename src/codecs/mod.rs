@@ -8,6 +8,7 @@ mod bwt_cm;
 pub mod bwt_codec;
 pub mod delta_ans;
 pub mod lzma_style;
+pub mod minmask;
 pub mod ppm;
 pub mod rle_huffman;
 
