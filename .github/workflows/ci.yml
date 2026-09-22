@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cargo clippy --release --all-targets
+      # The fixtures in tests/formats were written on x86_64: decoding them
+      # here is the cross-architecture check, and the writer test also shows
+      # whether this machine produces the same bytes.
+      - run: cargo test --release
+      - name: mutation harness, longer
+        run: NEXCOMP_MUTATIONS=5000 cargo test --release --test mutation_decode
+      - name: compress and decompress through the CLI
+        run: |
+          set -eux
+          head -c 5000000 /dev/urandom > random.bin
+          find src -name '*.rs' -exec cat {} + > text.bin
+          for f in random.bin text.bin; do
+            ./target/release/nexcomp compress "$f" "$f.nxc" --verbose
+            ./target/release/nexcomp inspect "$f.nxc"
+            ./target/release/nexcomp decompress "$f.nxc" "$f.out"
+            cmp "$f" "$f.out"
+          done
+          NEXCOMP_PASSWORD=ci-secret ./target/release/nexcomp compress text.bin sealed.nxc --encrypt
+          NEXCOMP_PASSWORD=ci-secret ./target/release/nexcomp decompress sealed.nxc sealed.out
+          cmp text.bin sealed.out
+      - name: files written on this machine, for the other architecture
+        run: |
+          mkdir -p cross/${{ matrix.arch }}
+          cp tests/formats/nx14/*.nxc cross/${{ matrix.arch }}/
+          ./target/release/nexcomp compress text.bin cross/${{ matrix.arch }}/cli.nxc
+          sha256sum text.bin > cross/${{ matrix.arch }}/cli.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-${{ matrix.arch }}
+          path: cross/${{ matrix.arch }}
+
+  cross-decode:
+    name: decode the other architecture's files
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each runner decodes what the other one wrote.
+          - arch: x86_64
+            runner: ubuntu-latest
+            from: aarch64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            from: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-${{ matrix.from }}
+          path: cross
+      - name: decode every file the other architecture wrote
+        run: |
+          set -eux
+          for f in cross/*.nxc; do
+            ./target/release/nexcomp decompress "$f" "$f.out"
+          done
+          mv cross/cli.nxc.out text.bin
+          sha256sum -c cross/cli.sha256
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: seeds
+        run: cargo test --release --test mutation_decode -- --ignored write_fuzz_seeds
+      - name: two minutes per target
+        run: |
+          set -eux
+          for target in decompress block codec-roundtrip roundtrip; do
+            cargo fuzz run "$target" -- -max_total_time=120 -malloc_limit_mb=512 -timeout=30
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
