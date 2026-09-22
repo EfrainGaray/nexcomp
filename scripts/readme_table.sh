@@ -7,7 +7,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tsv="${1:-$(ls -t "$ROOT"/bench/results/*.tsv | head -1)}"
+# A corpus the size of Silesia is a run of its own, so a table may come from
+# more than one artifact; every run uses the same script and manifest.
+if [ "$#" -gt 0 ]; then tsvs=("$@"); else tsvs=("$(ls -t "$ROOT"/bench/results/*.tsv | head -1)"); fi
 
 awk -F'\t' '
     $2 == "total" {
@@ -30,8 +32,14 @@ awk -F'\t' '
             print line " |"
         }
     }
-' "$tsv"
+' "${tsvs[@]}"
 
 echo
 echo "Measured by \`scripts/benchmark.sh\`; environment and per-file numbers in"
-echo "[\`bench/results/$(basename "${tsv%.tsv}.md")\`](bench/results/$(basename "${tsv%.tsv}.md"))."
+links=""
+for tsv in "${tsvs[@]}"; do
+    md="$(basename "${tsv%.tsv}.md")"
+    [ -n "$links" ] && links="$links, "
+    links="$links[\`bench/results/$md\`](bench/results/$md)"
+done
+echo "$links."

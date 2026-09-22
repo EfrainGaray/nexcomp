@@ -98,10 +98,13 @@ per-file table; the 448-byte difference is exactly the 32-byte whole-file hash N
 each of the 14 files. The full table, with the environment it was measured in, is in
 `bench/results/20260922T190350Z-darwin-x86_64.md`.
 
-Silesia and enwik8 are in a separate run of the same script: the machine this was written on was
-saturated by an unrelated build, where one Silesia file alone took over half an hour, so their
-artifact lands on its own. Sizes do not depend on the load; the times and peak RSS in every
-artifact are only as good as the `load` line it records.
+Silesia and enwik8 are a separate run of the same script (`bench/results/20260922T190707Z-darwin-x86_64.md`),
+because the machine was saturated by an unrelated build while this was written and one Silesia file
+alone took over half an hour there. Their numbers: Silesia 45,708,739 bytes (1.7254 bpb) against
+xz -9e at 48,456,004 and bzip2 -9 at 54,506,769; enwik8 24,485,454 (1.9588 bpb) against 24,831,648
+and 29,008,758. Both are the previous measurements plus 32 bytes per file, which is the whole-file
+hash NX14 adds. Sizes do not depend on the load; the times and peak RSS in an artifact are only as
+good as the `load` line it records.
 
 ### F-08 — the benchmark harness was not reproducible — fixed
 
