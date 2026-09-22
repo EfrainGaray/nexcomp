@@ -31,7 +31,9 @@ jobs:
       # The fixtures in tests/formats were written on x86_64: decoding them
       # here is the cross-architecture check, and the writer test also shows
       # whether this machine produces the same bytes.
-      - run: cargo test --release
+      # Minus the *_benchmark reports over the research paths: they measure
+      # speed, take tens of minutes, and assert nothing about correctness.
+      - run: cargo test --release -- --skip benchmark
       - name: mutation harness, longer
         run: NEXCOMP_MUTATIONS=5000 cargo test --release --test mutation_decode
       - name: compress and decompress through the CLI
