@@ -36,8 +36,8 @@ fn pre_release(data: &[u8]) -> Option<&'static str> {
 }
 
 #[derive(Parser)]
-#[command(name = "nexcomp", version = "1.2.0")]
-#[command(about = "NEXCOMP v1.2 — adaptive lossless compressor")]
+#[command(name = "nexcomp", version)]
+#[command(about = "NEXCOMP — adaptive lossless compressor")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -82,7 +82,7 @@ enum Commands {
 }
 
 // ---------------------------------------------------------------------------
-// New adaptive v1.2 compress / decompress
+// Compress / decompress
 // ---------------------------------------------------------------------------
 
 fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
@@ -239,7 +239,7 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
             if show_codec {
                 println!("{codec}");
             } else {
-                println!("version=1.3 size={orig_len} codec={codec}");
+                println!("format=NX13 size={orig_len} codec={codec}");
             }
         }
     }

@@ -128,3 +128,17 @@ fn hostile_kdf_costs_are_refused_quickly() {
     assert!(stderr.contains("out of range"), "{stderr}");
     assert!(start.elapsed().as_secs() < 5);
 }
+
+#[test]
+fn version_and_inspect_report_the_real_version_and_format() {
+    let out = Command::new(env!("CARGO_BIN_EXE_nexcomp")).arg("--version").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("nexcomp {}", env!("CARGO_PKG_VERSION")));
+
+    let input = scratch("plain4.txt");
+    std::fs::write(&input, b"hello hello hello").unwrap();
+    let packed = scratch("packed4.nxc");
+    let (code, stderr) = run(&["compress", input.to_str().unwrap(), packed.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    let out = Command::new(env!("CARGO_BIN_EXE_nexcomp")).args(["inspect", packed.to_str().unwrap()]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("format=NX13 size=17 "), "{out:?}");
+}
