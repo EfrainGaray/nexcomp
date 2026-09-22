@@ -85,15 +85,25 @@ impl Model {
     }
 }
 
-/// Carry-less binary arithmetic coder over 32-bit bounds.
-struct Encoder {
+/// Carry-less binary arithmetic coder over 32-bit bounds. `p1` is the
+/// probability of a 1 in 16-bit fixed point, within 1..=65535.
+pub(crate) struct Encoder {
     x1: u32,
     x2: u32,
     out: Vec<u8>,
 }
 
 impl Encoder {
-    fn encode(&mut self, bit: bool, p1: u32) {
+    pub(crate) fn new() -> Self {
+        Self { x1: 0, x2: u32::MAX, out: Vec::new() }
+    }
+
+    pub(crate) fn finish(mut self) -> Vec<u8> {
+        self.out.extend_from_slice(&self.x1.to_be_bytes());
+        self.out
+    }
+
+    pub(crate) fn encode(&mut self, bit: bool, p1: u32) {
         let xmid = self.x1 + ((u64::from(self.x2 - self.x1) * u64::from(p1)) >> 16) as u32;
         if bit {
             self.x2 = xmid;
@@ -108,7 +118,7 @@ impl Encoder {
     }
 }
 
-struct Decoder<'a> {
+pub(crate) struct Decoder<'a> {
     x1: u32,
     x2: u32,
     x: u32,
@@ -116,14 +126,22 @@ struct Decoder<'a> {
     pos: usize,
 }
 
-impl Decoder<'_> {
+impl<'a> Decoder<'a> {
+    pub(crate) fn new(input: &'a [u8]) -> Self {
+        let mut dec = Self { x1: 0, x2: u32::MAX, x: 0, input, pos: 0 };
+        for _ in 0..4 {
+            dec.x = (dec.x << 8) | dec.next_byte();
+        }
+        dec
+    }
+
     fn next_byte(&mut self) -> u32 {
         let b = self.input.get(self.pos).copied().unwrap_or(0);
         self.pos += 1;
         u32::from(b)
     }
 
-    fn decode(&mut self, p1: u32) -> bool {
+    pub(crate) fn decode(&mut self, p1: u32) -> bool {
         let xmid = self.x1 + ((u64::from(self.x2 - self.x1) * u64::from(p1)) >> 16) as u32;
         let bit = self.x <= xmid;
         if bit {
@@ -143,7 +161,7 @@ impl Decoder<'_> {
 /// Entropy-code a BWT output block.
 pub fn encode(bwt: &[u8]) -> Vec<u8> {
     let mut model = Model::new();
-    let mut enc = Encoder { x1: 0, x2: u32::MAX, out: Vec::with_capacity(bwt.len() / 3) };
+    let mut enc = Encoder::new();
     for &byte in bwt {
         for i in (0..8).rev() {
             let bit = (byte >> i) & 1 == 1;
@@ -151,17 +169,13 @@ pub fn encode(bwt: &[u8]) -> Vec<u8> {
             model.update(bit);
         }
     }
-    enc.out.extend_from_slice(&enc.x1.to_be_bytes());
-    enc.out
+    enc.finish()
 }
 
 /// Decode `len` bytes of BWT output produced by [`encode`].
 pub fn decode(data: &[u8], len: usize) -> Vec<u8> {
     let mut model = Model::new();
-    let mut dec = Decoder { x1: 0, x2: u32::MAX, x: 0, input: data, pos: 0 };
-    for _ in 0..4 {
-        dec.x = (dec.x << 8) | dec.next_byte();
-    }
+    let mut dec = Decoder::new(data);
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
         let mut byte = 0u8;
