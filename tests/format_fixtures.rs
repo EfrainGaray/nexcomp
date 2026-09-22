@@ -2,7 +2,9 @@
 //! versions must keep decoding to the exact same bytes, on any machine.
 //!
 //! `tests/formats/MANIFEST` lists every fixture with the length and BLAKE3 of
-//! its original. The fixtures are frozen: regenerating them needs
+//! its original. Directories the current writer no longer produces (a codec
+//! that got better makes smaller files) keep their bytes: `nx14-pre-reparse`
+//! is what 1.6.0 wrote before the LZMA re-parse iterated. The fixtures are frozen: regenerating them needs
 //! `NEXCOMP_REGENERATE_FIXTURES=1`, and a fixture whose bytes change is a
 //! compatibility break, not a test to update.
 //!
@@ -168,7 +170,7 @@ fn fixtures_decode_to_their_recorded_bytes() {
         assert_eq!(blake3::hash(&decoded).to_hex().as_str(), hash, "{path}: contents");
         checked += 1;
     }
-    assert!(checked >= 18, "only {checked} fixtures checked");
+    assert!(checked >= 35, "only {checked} fixtures checked");
 }
 
 /// The writer still produces the committed bytes; on another architecture this

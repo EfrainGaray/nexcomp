@@ -325,7 +325,10 @@ fn copy_match(output: &mut Vec<u8>, offset: usize, length: usize) -> Result<(), 
 // Price-based optimal parsing
 // ---------------------------------------------------------------------------
 
-const PARSE_ITERATIONS: usize = 1;
+/// Re-parses at most this many times; each one prices the tokens of the
+/// previous parse and runs the search again. Rounds stop as soon as one
+/// fails to improve, so blocks that settle after the first pay nothing.
+const PARSE_ITERATIONS: usize = 5;
 /// Matches at least this long are taken greedily (bounds DP work on repetitive data).
 const NICE_LEN: usize = 64;
 
@@ -633,9 +636,10 @@ pub fn encode_block(data: &[u8]) -> Vec<u8> {
     for _ in 0..PARSE_ITERATIONS {
         tokens = optimal_parse(data, &Prices::from_tokens(&tokens));
         let encoded = encode_tokens(data, &tokens);
-        if encoded.len() < best.len() {
-            best = encoded;
+        if encoded.len() >= best.len() {
+            break;
         }
+        best = encoded;
     }
     best
 }
