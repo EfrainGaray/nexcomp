@@ -484,6 +484,21 @@ fn inspect_codecs(payload: &[u8]) -> Result<String, NexcompError> {
 // ---------------------------------------------------------------------------
 
 const ENCRYPT_MAGIC: &[u8; 4] = b"NXE2";
+const ENCRYPT_HEADER_LEN: usize = 8;
+
+/// Strip the encryption wrapper if the file has one, decrypting with `password`.
+fn open_payload(file_data: Vec<u8>, password: Option<String>) -> Result<Vec<u8>, NexcompError> {
+    if file_data.len() < 4 || &file_data[0..4] != ENCRYPT_MAGIC {
+        return Ok(file_data);
+    }
+    if file_data.len() < ENCRYPT_HEADER_LEN {
+        return Err(NexcompError::TruncatedPayload);
+    }
+    let pw = password
+        .ok_or_else(|| io::Error::other("File is encrypted; provide --decrypt <password>"))?;
+    let (aad, ciphertext) = file_data.split_at(ENCRYPT_HEADER_LEN);
+    Ok(crypto::decrypt(ciphertext, pw.as_bytes(), aad)?)
+}
 
 fn main() -> Result<(), NexcompError> {
     let cli = Cli::parse();
@@ -539,19 +554,7 @@ fn main() -> Result<(), NexcompError> {
             let file_data = fs::read(&input)?;
             eprintln!("Decompressing to {} ...", output);
 
-            // Detect format
-            let payload = if file_data.len() >= 4 && &file_data[0..4] == ENCRYPT_MAGIC {
-                // Encrypted adaptive format
-                let pw = decrypt.ok_or_else(|| {
-                    io::Error::other("File is encrypted; provide --decrypt <password>")
-                })?;
-                let key = pw.as_bytes();
-                let aad = &file_data[0..8];
-                let ciphertext = &file_data[8..];
-                crypto::decrypt(ciphertext, key, aad)?
-            } else {
-                file_data.clone()
-            };
+            let payload = open_payload(file_data, decrypt)?;
 
             let decompressed = decompress_data(&payload)?;
 
@@ -565,18 +568,7 @@ fn main() -> Result<(), NexcompError> {
         } => {
             let file_data = fs::read(&input)?;
 
-            // Handle encrypted files
-            let payload = if file_data.len() >= 4 && &file_data[0..4] == ENCRYPT_MAGIC {
-                let pw = decrypt.ok_or_else(|| {
-                    io::Error::other("File is encrypted; provide --decrypt <password>")
-                })?;
-                let key = pw.as_bytes();
-                let aad = &file_data[0..8];
-                let ciphertext = &file_data[8..];
-                crypto::decrypt(ciphertext, key, aad)?
-            } else {
-                file_data.clone()
-            };
+            let payload = open_payload(file_data, decrypt)?;
 
             if payload.len() >= 4 && &payload[0..4] == ADAPTIVE_MAGIC {
                 // New adaptive format
