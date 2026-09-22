@@ -28,3 +28,23 @@ fn truncated_encrypted_wrapper_is_an_error_not_a_panic() {
         assert!(!stderr.contains("panicked"), "{args:?} panicked: {stderr}");
     }
 }
+
+#[test]
+fn pre_release_formats_are_refused_with_a_clear_error() {
+    let out = scratch("out2.bin");
+    for (name, magic) in [("nxc1", &b"NXC\x01"[..]), ("nx12", b"NX12"), ("nxe1", b"NXE1")] {
+        let file = scratch(&format!("{name}.nxc"));
+        let mut data = magic.to_vec();
+        data.extend_from_slice(&[0xFF; 64]);
+        std::fs::write(&file, &data).unwrap();
+        for args in [
+            vec!["decompress", file.to_str().unwrap(), out.to_str().unwrap()],
+            vec!["inspect", file.to_str().unwrap()],
+        ] {
+            let (code, stderr) = run(&args);
+            assert_ne!(code, 0, "{args:?} should fail");
+            assert!(stderr.contains("pre-release"), "{args:?}: {stderr}");
+            assert!(!stderr.contains("panicked"), "{args:?} panicked: {stderr}");
+        }
+    }
+}
