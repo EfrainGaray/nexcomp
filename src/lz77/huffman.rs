@@ -484,13 +484,14 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Read `count` bits, returning the value in the low bits.
+    /// Read `count` bits, returning the value in the low bits. Bits past the
+    /// end of the data read as zero.
     #[inline]
     pub fn read_bits(&mut self, count: u8) -> u32 {
         self.ensure_bits(count);
         let val = self.current & ((1 << count) - 1);
         self.current >>= count;
-        self.bits_in -= count;
+        self.bits_in = self.bits_in.saturating_sub(count);
         val
     }
 
@@ -501,13 +502,14 @@ impl<'a> BitReader<'a> {
     }
 
     /// Like `read_huffman`, but `None` for a bit pattern the table does not
-    /// cover, which only happens with corrupt code lengths.
+    /// cover or a code running past the end of the data; both only happen
+    /// with corrupt input.
     pub fn read_huffman_checked(&mut self, decode_table: &HuffDecodeTable) -> Option<u16> {
         self.ensure_bits(decode_table.max_len);
         let peek = self.current & ((1u32 << decode_table.max_len) - 1);
         let entry = decode_table.lookup[peek as usize];
         let len = entry >> 16;
-        if len == 0 {
+        if len == 0 || len > u32::from(self.bits_in) {
             return None;
         }
         let sym = entry & 0xFFFF;
@@ -837,43 +839,38 @@ pub fn huffman_encode_blocked(tokens: &[Token], block_size: usize) -> Vec<u8> {
     result
 }
 
-/// Decode per-block Huffman-encoded LZ77 tokens.
+/// Decode per-block Huffman-encoded LZ77 tokens from a trusted source.
 ///
-/// Input format matches `huffman_encode_blocked` output.
+/// Input format matches `huffman_encode_blocked` output; panics if corrupt.
 pub fn huffman_decode_blocked(data: &[u8]) -> Vec<Token> {
-    let n_tokens = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let n_blocks = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    huffman_decode_blocked_checked(data).expect("corrupt Huffman token stream")
+}
 
-    let mut tokens = Vec::with_capacity(n_tokens);
+/// Like [`huffman_decode_blocked`], but `None` for a corrupt stream.
+pub fn huffman_decode_blocked_checked(data: &[u8]) -> Option<Vec<Token>> {
+    let u32_at = |pos: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(data.get(pos..pos.checked_add(4)?)?.try_into().ok()?) as usize)
+    };
+    let n_tokens = u32_at(0)?;
+    let n_blocks = u32_at(4)?;
+
+    // Every token takes at least one bit.
+    let mut tokens = Vec::with_capacity(n_tokens.min(data.len().saturating_mul(8)));
     let mut pos = 8; // past the two 4-byte headers
 
     for _ in 0..n_blocks {
-        let block_n_tokens = u32::from_le_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-        ]) as usize;
-        pos += 4;
+        let block_n_tokens = u32_at(pos)?;
+        let block_byte_len = u32_at(pos + 4)?;
+        pos += 8;
 
-        let block_byte_len = u32::from_le_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-        ]) as usize;
-        pos += 4;
-
-        let block_data = &data[pos..pos + block_byte_len];
+        let block_data = data.get(pos..pos.checked_add(block_byte_len)?)?;
         pos += block_byte_len;
 
         let mut reader = BitReader::new(block_data);
 
-        // Read litlen code lengths (286 x 4 bits)
-        let mut litlen_lengths = vec![0u8; LITLEN_SYMBOLS];
-        for i in 0..LITLEN_SYMBOLS {
-            litlen_lengths[i] = reader.read_bits(4) as u8;
-        }
-
-        // Read dist code lengths (48 x 4 bits)
-        let mut dist_lengths = vec![0u8; DIST_SYMBOLS];
-        for i in 0..DIST_SYMBOLS {
-            dist_lengths[i] = reader.read_bits(4) as u8;
-        }
+        // Code lengths: 286 litlen then 48 dist, 4 bits each
+        let litlen_lengths: Vec<u8> = (0..LITLEN_SYMBOLS).map(|_| reader.read_bits(4) as u8).collect();
+        let dist_lengths: Vec<u8> = (0..DIST_SYMBOLS).map(|_| reader.read_bits(4) as u8).collect();
 
         // Rebuild codes and decode tables
         let litlen_codes = canonical_codes(&litlen_lengths, LITLEN_SYMBOLS);
@@ -884,18 +881,19 @@ pub fn huffman_decode_blocked(data: &[u8]) -> Vec<Token> {
         // Decode block_n_tokens tokens (with MRU cache for rep-matches)
         let mut mru = MruCache::new();
         for _ in 0..block_n_tokens {
-            let sym = reader.read_huffman(&litlen_table);
+            let sym = reader.read_huffman_checked(&litlen_table)?;
             if sym < 256 {
                 tokens.push(Token::Literal(sym as u8));
             } else {
-                let (base_len, extra_bits) = LENGTH_TABLE[(sym - 257) as usize];
+                // 256 is never written; length codes are 257..=285.
+                let (base_len, extra_bits) = *LENGTH_TABLE.get(usize::from(sym).checked_sub(257)?)?;
                 let extra_val = if extra_bits > 0 { reader.read_bits(extra_bits) as u16 } else { 0 };
                 let length = base_len + extra_val;
 
-                let dist_sym = reader.read_huffman(&dist_table);
+                let dist_sym = reader.read_huffman_checked(&dist_table)?;
                 let offset = if dist_sym >= REP_OFFSET_0 {
                     let idx = (dist_sym - REP_OFFSET_0) as usize;
-                    let off = mru.recent[idx];
+                    let off = *mru.recent.get(idx)?;
                     mru.promote(idx);
                     off
                 } else {
@@ -915,7 +913,7 @@ pub fn huffman_decode_blocked(data: &[u8]) -> Vec<Token> {
         }
     }
 
-    tokens
+    Some(tokens)
 }
 
 // ────────────────────────────────────────────

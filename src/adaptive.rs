@@ -97,7 +97,7 @@ fn compress_baseline(data: &[u8]) -> Vec<u8> {
 }
 
 fn decompress_baseline(data: &[u8], expected_len: usize) -> Result<Vec<u8>, AdaptiveError> {
-    let tokens = huffman::huffman_decode_blocked(data);
+    let tokens = huffman::huffman_decode_blocked_checked(data).ok_or(AdaptiveError::Decode("lz77huf"))?;
     lz77::lz77_decode_with_limit(&tokens, expected_len).map_err(|_| AdaptiveError::Decode("lz77huf"))
 }
 
@@ -109,7 +109,7 @@ struct AdaptiveResult {
 }
 
 /// Encode `data` with one codec; `None` if the codec rejects the input.
-fn encode_with(codec: CodecId, data: &[u8]) -> Option<Vec<u8>> {
+pub fn encode_with(codec: CodecId, data: &[u8]) -> Option<Vec<u8>> {
     match codec {
         CodecId::Lz77Huffman => Some(compress_baseline(data)),
         CodecId::LzmaStyle => Some(lzma_style::encode_block(data)),
@@ -297,7 +297,7 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8], expected_len: usiz
             rle_huffman::rle_huffman_decode_checked(data).map_err(|_| AdaptiveError::Decode("rlehuf"))?
         }
         CodecId::BwtRans => bwt_codec::bwt_decompress(data),
-        CodecId::Ppm => ppm::ppm_decompress(data),
+        CodecId::Ppm => ppm::ppm_decompress_checked(data).ok_or(AdaptiveError::Decode("ppm"))?,
         CodecId::StrideCm => stride_cm::decode(data).ok_or(AdaptiveError::Decode("stride-cm"))?,
         CodecId::Passthrough => data.to_vec(),
     })

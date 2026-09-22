@@ -204,12 +204,13 @@ fn encode_byte_ppm(
     0
 }
 
-/// Decode a single byte using PPM with exclusion (Method D escape).
+/// Decode a single byte using PPM with exclusion (Method D escape); `None`
+/// when a corrupt stream escapes past every symbol.
 fn decode_byte_ppm(
     dec: &mut RangeDecoder,
     model: &PpmModel,
     history: &History,
-) -> (u8, usize) {
+) -> Option<(u8, usize)> {
     let mut excluded = [false; 256];
 
     // Try from highest order down to 0
@@ -244,7 +245,7 @@ fn decode_byte_ppm(
                     let c = count as u32;
                     if cum + c > target {
                         dec.decode_freq(cum, c, denom);
-                        return (sym, order);
+                        return Some((sym, order));
                     }
                     cum += c;
                 }
@@ -264,11 +265,13 @@ fn decode_byte_ppm(
     // Order -1: uniform distribution over non-excluded symbols
     let non_excluded: Vec<u8> = (0..=255u8).filter(|&b| !excluded[b as usize]).collect();
     let count = non_excluded.len() as u32;
-    debug_assert!(count > 0, "all symbols excluded, cannot decode");
+    if count == 0 {
+        return None;
+    }
     let target = dec.get_freq(count);
     let byte = non_excluded[target as usize];
     dec.decode_freq(target, 1, count);
-    (byte, 0)
+    Some((byte, 0))
 }
 
 // ---------------------------------------------------------------------------
@@ -301,15 +304,15 @@ pub fn ppm_compress(data: &[u8]) -> Vec<u8> {
     header
 }
 
-/// Decompress PPM-compressed data.
-pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
-    if payload.len() < 4 {
-        return Vec::new();
-    }
-    let orig_len =
-        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+/// Decompress PPM-compressed data; `None` for a corrupt stream.
+pub fn ppm_decompress_checked(payload: &[u8]) -> Option<Vec<u8>> {
+    let orig_len = u32::from_le_bytes(payload.get(..4)?.try_into().ok()?) as usize;
     if orig_len == 0 {
-        return Vec::new();
+        return Some(Vec::new());
+    }
+    // The range coder always flushes at least 5 bytes.
+    if payload.len() < 4 + 5 {
+        return None;
     }
 
     let mut model = PpmModel::new();
@@ -318,13 +321,18 @@ pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(orig_len);
 
     for _ in 0..orig_len {
-        let (byte, order) = decode_byte_ppm(&mut dec, &model, &ctx);
+        let (byte, order) = decode_byte_ppm(&mut dec, &model, &ctx)?;
         output.push(byte);
         model.update(&ctx, byte, order);
         ctx.push(byte);
     }
 
-    output
+    Some(output)
+}
+
+/// Decompress PPM-compressed data from a trusted source; panics if corrupt.
+pub fn ppm_decompress(payload: &[u8]) -> Vec<u8> {
+    ppm_decompress_checked(payload).expect("corrupt PPM stream")
 }
 
 // ---------------------------------------------------------------------------
