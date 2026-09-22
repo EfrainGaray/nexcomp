@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 const CONTAINER_HEADER: usize = 16;
-const CONTAINER_BLOCK: usize = 10;
+const CONTAINER_BLOCK: usize = 14;
 
 fn lcg(state: &mut u64) -> u64 {
     *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

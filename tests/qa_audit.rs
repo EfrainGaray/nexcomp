@@ -846,36 +846,15 @@ fn qa_bwt_large_block_roundtrip() {
 
 #[test]
 fn qa_no_checksum_verification() {
-    // Demonstrates that corrupted compressed data can decompress without error.
-    // This is a design finding, not necessarily a bug, but worth noting.
+    // A corrupted payload byte must be reported, never returned as data.
     let data = b"This is important data that should be verified. ".repeat(20);
     let mut compressed = adaptive_compress(&data);
-
-    // Corrupt a byte in the compressed payload (after file + block headers)
-    if compressed.len() > 30 {
-        compressed[28] ^= 0xFF; // flip bits in compressed data
-    }
-
-    // Try decompressing — it will likely produce garbage without crashing
-    // (or it might crash, depending on the codec)
+    let payload_start = 16 + 14; // file header + one block header
+    compressed[payload_start + 2] ^= 0xFF;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        adaptive_decompress(&compressed)
+        nexcomp::adaptive::try_adaptive_decompress(&compressed)
     }));
-
-    match result {
-        Ok(dec) => {
-            // Got some output — verify it's NOT the original (corrupt data)
-            if dec == data.to_vec() {
-                // Extremely unlikely but possible if corruption was in padding
-                eprintln!("NOTE: Corrupted data decompressed to original (unlikely)");
-            } else {
-                eprintln!("FINDING: Corrupted data decompressed to garbage ({} bytes) without error", dec.len());
-            }
-        }
-        Err(_) => {
-            eprintln!("FINDING: Corrupted data caused a panic (no error handling for corrupt payloads)");
-        }
-    }
+    assert!(!matches!(result, Ok(Ok(ref d)) if d != &data), "corrupt data returned without error");
 }
 
 // ============================================================================

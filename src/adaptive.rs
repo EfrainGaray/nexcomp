@@ -41,6 +41,8 @@ pub enum AdaptiveError {
     Decode(&'static str),
     #[error("{0} block decoder panicked on corrupt input")]
     DecoderPanic(&'static str),
+    #[error("block checksum mismatch: the data is corrupt")]
+    ChecksumMismatch,
     #[error("size mismatch: expected {expected}, got {got}")]
     SizeMismatch { expected: usize, got: usize },
 }
@@ -244,11 +246,28 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8]) -> Result<Vec<u8>,
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
 const FILE_HEADER_LEN: usize = 16;
-const BLOCK_HEADER_LEN: usize = 10;
+const BLOCK_HEADER_LEN: usize = 14;
+
+/// CRC-32 (IEEE 802.3) of a block's original bytes, checked after decoding.
+fn crc32(data: &[u8]) -> u32 {
+    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut t = [0u32; 256];
+        for (i, e) in t.iter_mut().enumerate() {
+            let mut c = i as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+            *e = c;
+        }
+        t
+    });
+    !data.iter().fold(!0u32, |c, &b| table[((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8))
+}
 
 /// Full adaptive compress: data -> wire format
 /// Format: [4B magic "NX13"][8B orig_len LE][4B block_count LE] then per block:
-///         [1B codec_id][1B bcj_flag][4B orig_len LE][4B comp_len LE][compressed_data]
+///         [1B codec_id][1B bcj_flag][4B orig_len LE][4B comp_len LE][4B crc32 LE][compressed_data]
 /// Blocks are compressed in parallel.
 pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
     let blocks: Vec<AdaptiveResult> = data
@@ -266,6 +285,7 @@ pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
         out.push(if block.bcj_applied { 1 } else { 0 });
         out.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
         out.extend_from_slice(&(block.compressed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&crc32(chunk).to_le_bytes());
         out.extend_from_slice(&block.compressed);
     }
     out
@@ -276,6 +296,7 @@ pub struct BlockInfo<'a> {
     pub codec: CodecId,
     pub bcj_applied: bool,
     pub orig_len: usize,
+    pub crc: u32,
     pub data: &'a [u8],
 }
 
@@ -308,10 +329,11 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
         let codec = CodecId::from_u8(codec_id).ok_or(AdaptiveError::UnknownCodec(codec_id))?;
         let block_orig = u32::from_le_bytes(read_le(payload, pos + 2)?) as usize;
         let comp_len = u32::from_le_bytes(read_le(payload, pos + 6)?) as usize;
+        let crc = u32::from_le_bytes(read_le(payload, pos + 10)?);
         pos += BLOCK_HEADER_LEN;
         let end = pos.checked_add(comp_len).ok_or(AdaptiveError::Truncated)?;
         let data = payload.get(pos..end).ok_or(AdaptiveError::Truncated)?;
-        blocks.push(BlockInfo { codec, bcj_applied: bcj != 0, orig_len: block_orig, data });
+        blocks.push(BlockInfo { codec, bcj_applied: bcj != 0, orig_len: block_orig, crc, data });
         pos = end;
     }
     if pos != payload.len() {
@@ -351,6 +373,9 @@ pub fn try_adaptive_decompress(payload: &[u8]) -> Result<Vec<u8>, AdaptiveError>
                 .map_err(|_| AdaptiveError::DecoderPanic(b.codec.name()))??;
             if decompressed.len() != b.orig_len {
                 return Err(AdaptiveError::SizeMismatch { expected: b.orig_len, got: decompressed.len() });
+            }
+            if crc32(&decompressed) != b.crc {
+                return Err(AdaptiveError::ChecksumMismatch);
             }
             Ok(decompressed)
         })
@@ -506,6 +531,7 @@ mod tests {
         container.push(0);
         container.extend_from_slice(&100u32.to_le_bytes());
         container.extend_from_slice(&4u32.to_le_bytes());
+        container.extend_from_slice(&0u32.to_le_bytes());
         container.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
         let result = std::panic::catch_unwind(|| try_adaptive_decompress(&container));
@@ -520,6 +546,7 @@ mod tests {
         c.push(0);
         c.extend_from_slice(&orig_len.to_le_bytes());
         c.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        c.extend_from_slice(&0u32.to_le_bytes());
         c.extend_from_slice(payload);
         c
     }
@@ -561,6 +588,28 @@ mod tests {
         let (_, blocks) = parse_blocks(&compressed).unwrap();
         assert_eq!(blocks[0].codec, CodecId::StrideCm);
         assert_eq!(adaptive_decompress(&compressed), data);
+    }
+
+    #[test]
+    fn test_crc32_matches_the_standard_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn test_corrupt_payload_fails_the_checksum() {
+        let data = b"payload that a flipped bit must not silently change. ".repeat(30);
+        let good = adaptive_compress(&data);
+        let mut detected = 0;
+        for pos in FILE_HEADER_LEN + BLOCK_HEADER_LEN..good.len() {
+            let mut bad = good.clone();
+            bad[pos] ^= 0x10;
+            let result = std::panic::catch_unwind(|| try_adaptive_decompress(&bad));
+            match result {
+                Ok(Ok(out)) => assert_eq!(out, data, "corruption at {pos} returned wrong data"),
+                _ => detected += 1,
+            }
+        }
+        assert!(detected > 0);
     }
 
     #[test]
