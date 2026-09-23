@@ -502,7 +502,11 @@ fn write_blocks<W: std::io::Write>(
 ) -> Result<usize, AdaptiveError> {
     let in_flight = rayon::current_num_threads().max(1);
     let mut hasher = blake3::Hasher::new();
-    for group in blocks.chunks(in_flight) {
+    let mut rest = blocks;
+    while !rest.is_empty() {
+        let take = group_within_budget(rest, in_flight);
+        let (group, tail) = rest.split_at(take);
+        rest = tail;
         let decoded: Vec<Result<Vec<u8>, AdaptiveError>> = group.par_iter().map(decode_block).collect();
         for block in decoded {
             let block = block?;
@@ -517,6 +521,38 @@ fn write_blocks<W: std::io::Write>(
     }
     Ok(orig_len)
 }
+
+/// Working memory a codec needs while decoding, as a multiple of the block it
+/// produces. PPM builds a context table per byte seen and is by far the
+/// hungriest; the rest stay within a few times their block.
+fn decode_cost(block: &BlockInfo<'_>) -> usize {
+    let factor = match block.codec {
+        CodecId::Ppm => 384,
+        CodecId::BwtRans => 24,
+        CodecId::StrideCm => 8,
+        _ => 4,
+    };
+    block.orig_len.saturating_mul(factor)
+}
+
+/// How many of the next blocks may decode at once: as many as there are
+/// threads, but never so many that their working memory passes the budget.
+/// Always at least one, so a single expensive block still decodes.
+fn group_within_budget(blocks: &[BlockInfo<'_>], in_flight: usize) -> usize {
+    let mut total = 0usize;
+    for (taken, block) in blocks.iter().enumerate().take(in_flight) {
+        total = total.saturating_add(decode_cost(block));
+        if taken > 0 && total > DECODE_MEMORY_BUDGET {
+            return taken;
+        }
+    }
+    blocks.len().min(in_flight).max(1)
+}
+
+/// Working memory the decoder aims to stay under, whatever the thread count.
+/// One block may still exceed it on its own; nothing below a format change
+/// can bound a codec's own model.
+const DECODE_MEMORY_BUDGET: usize = 2 << 30;
 
 /// Like [`try_adaptive_decompress`], but refuses files that declare more than
 /// `max_output` bytes before allocating anything for them.
@@ -544,6 +580,20 @@ pub fn adaptive_decompress(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PPM keeps a context table per byte of its block, so decoding several of
+    /// them at once is what drives the decoder's peak memory. The budget must
+    /// hold them back without ever stalling on a single block.
+    #[test]
+    fn expensive_blocks_decode_fewer_at_a_time() {
+        let block = |codec| BlockInfo { codec, bcj_applied: false, orig_len: BLOCK_SIZE, crc: 0, data: &[] };
+        let ppm: Vec<BlockInfo> = (0..8).map(|_| block(CodecId::Ppm)).collect();
+        let store: Vec<BlockInfo> = (0..8).map(|_| block(CodecId::Passthrough)).collect();
+        assert_eq!(group_within_budget(&ppm, 8), 1, "a 4 MiB PPM block needs ~1.5 GiB");
+        assert_eq!(group_within_budget(&store, 8), 8, "stored blocks cost their own size");
+        assert_eq!(group_within_budget(&ppm, 1), 1);
+        assert_eq!(group_within_budget(&store[..3], 8), 3);
+    }
 
     #[test]
     fn test_adaptive_roundtrip_text() {
