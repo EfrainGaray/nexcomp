@@ -490,6 +490,16 @@ fn decode_block(block: &BlockInfo<'_>) -> Result<Vec<u8>, AdaptiveError> {
 /// writing to a file must discard it if this returns an error.
 pub fn decompress_to<W: std::io::Write>(payload: &[u8], out: &mut W) -> Result<usize, AdaptiveError> {
     let (orig_len, blocks, digest) = parse_container(payload)?;
+    write_blocks(orig_len, &blocks, digest, out)
+}
+
+/// The body of [`decompress_to`], on a container someone else parsed.
+fn write_blocks<W: std::io::Write>(
+    orig_len: usize,
+    blocks: &[BlockInfo<'_>],
+    digest: Option<&[u8]>,
+    out: &mut W,
+) -> Result<usize, AdaptiveError> {
     let in_flight = rayon::current_num_threads().max(1);
     let mut hasher = blake3::Hasher::new();
     for group in blocks.chunks(in_flight) {
@@ -515,17 +525,16 @@ pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Res
     if orig_len > max_output {
         return Err(AdaptiveError::OutputLimit { declared: orig_len, limit: max_output });
     }
-    let mut out = vec![0u8; orig_len];
-    out.par_chunks_mut(BLOCK_SIZE).zip(blocks.par_iter()).try_for_each(|(dst, b)| {
-        dst.copy_from_slice(&decode_block(b)?);
-        Ok(())
-    })?;
-    // The per-block CRC localises corruption; this proves the whole file.
-    if digest.is_some_and(|d| blake3::hash(&out).as_bytes() != d) {
-        return Err(AdaptiveError::DigestMismatch);
-    }
+    // The header alone can declare an output far larger than the payload could
+    // ever produce — 14 bytes of block header stand for 4 MiB — so the buffer
+    // grows with what actually decodes instead of with what the file claims.
+    let mut out = Vec::with_capacity(orig_len.min(INITIAL_CAPACITY));
+    write_blocks(orig_len, &blocks, digest, &mut out)?;
     Ok(out)
 }
+
+/// How much output to reserve up front, whatever the container declares.
+const INITIAL_CAPACITY: usize = 64 * 1024 * 1024;
 
 /// Panicking convenience wrapper over `try_adaptive_decompress`.
 pub fn adaptive_decompress(payload: &[u8]) -> Vec<u8> {

@@ -133,6 +133,32 @@ fn output_limit_refuses_files_that_expand_beyond_it() {
     assert_eq!(try_adaptive_decompress_limited(&compressed, data.len()).unwrap(), data);
 }
 
+/// The container declares what it holds, and 14 bytes of block header stand
+/// for 4 MiB, so a small file can claim terabytes. The unlimited entry point
+/// used to reserve that claim before decoding a single block.
+#[test]
+fn a_container_that_declares_terabytes_allocates_none_of_them() {
+    let _measuring = measuring();
+    let blocks = 200_000usize;
+    let mut file = b"NX14".to_vec();
+    file.extend_from_slice(&((blocks * BLOCK_SIZE) as u64).to_le_bytes());
+    file.extend_from_slice(&(blocks as u32).to_le_bytes());
+    for _ in 0..blocks {
+        file.push(CodecId::Passthrough as u8);
+        file.push(0);
+        file.extend_from_slice(&(BLOCK_SIZE as u32).to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+    }
+    file.extend_from_slice(&[0u8; 32]);
+
+    LARGEST.store(0, Ordering::Relaxed);
+    let result = std::panic::catch_unwind(|| try_adaptive_decompress(&file));
+    let largest = LARGEST.load(Ordering::Relaxed);
+    assert!(matches!(result, Ok(Err(_))), "a file declaring 781 GiB must return Err");
+    assert!(largest <= LIMIT, "allocated {largest} bytes for a {} byte file", file.len());
+}
+
 /// A writer that only counts, so the test measures the decoder's memory.
 struct Counter(usize);
 
