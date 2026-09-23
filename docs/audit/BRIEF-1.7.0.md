@@ -67,9 +67,11 @@ The first audit read `6d55700`. Since then, besides the twelve findings:
    on aarch64. Decoders are meant to be integer-only, with no dependence on
    thread count, rayon scheduling or hash iteration order.
 3. Hostile input: no panic, no hang, no unbounded allocation for any byte string
-   given to `try_adaptive_decompress`, `decompress_to` or the CLI. Our gate
-   asks for 24 h of fuzzing per target with no crash; we have about 40 minutes per target so far
-   (`fuzz/`, four targets), which is the one gate criterion still open.
+   given to `try_adaptive_decompress`, `decompress_to` or the CLI. Our gate asks
+   for 24 h of fuzzing per target with no crash, and it is the one criterion
+   still open: about 3 h 40 min per target on this release (3,284,766 executions
+   across the four targets, no crash) on top of the earlier runs, plus two
+   minutes per target on every CI run.
 4. The newest code: the `stride_cm` match model and the mask choice in
    `encode()`, the re-parse loop in `lzma_style`.
 
