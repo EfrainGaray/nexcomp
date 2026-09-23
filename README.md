@@ -2,10 +2,12 @@
 
 Adaptive lossless compressor that selects the best codec per block.
 
-**WARNING: This is experimental software.** NEXCOMP is a research compressor, not
-production-hardened. From 1.6.0 on, a release may stop writing a file format but never stops
-reading one an earlier release wrote ([docs/FORMAT.md](docs/FORMAT.md)); everything else, the CLI
-and the library API included, can still change between versions.
+1.7.0 is the first release meant to be used as a stable one: the formats are specified and pinned
+by fixtures, the decoder is bounded and fuzzed, and every number below comes from a script that
+records how it ran. A release may stop writing a file format but never stops reading one an
+earlier release wrote ([docs/FORMAT.md](docs/FORMAT.md)); the CLI and the library API can still
+change between versions. It remains a research compressor: it is slow to compress, it has not
+been through an independent audit of this release, and nothing but this project writes NX14.
 
 ## Results
 
@@ -14,16 +16,16 @@ and decompressed on its own, and only recorded once the restored bytes hashed to
 
 | corpus | original | NEXCOMP | bpb | xz | bzip2 |
 |---|---|---|---|---|---|
-| calgary | 3141622 | 743539 | 1.8934 | 843828 | 828347 |
+| calgary | 3141622 | 743525 | 1.8934 | 843828 | 828347 |
 | canterbury | 2810784 | 403833 | 1.1494 | 493080 | 542710 |
-| silesia | 211938580 | 45461484 | 1.7160 | 48456004 | 54506769 |
+| silesia | 211938580 | 45456856 | 1.7159 | 48456004 | 54506769 |
 | enwik8 | 100000000 | 24485454 | 1.9588 | 24831648 | 29008758 |
 
-Measured by `scripts/benchmark.sh`; environment and per-file numbers in
-[`bench/results/20260922T190350Z-darwin-x86_64.md`](bench/results/20260922T190350Z-darwin-x86_64.md), [`bench/results/20260922T190707Z-darwin-x86_64.md`](bench/results/20260922T190707Z-darwin-x86_64.md), [`bench/results/20260922T213744Z-darwin-x86_64.md`](bench/results/20260922T213744Z-darwin-x86_64.md).
+Measured by `scripts/benchmark.sh` on the 1.7.0 build; environment, tool versions and per-file
+numbers in [`bench/results/20260923T020706Z-darwin-x86_64.md`](bench/results/20260923T020706Z-darwin-x86_64.md).
 
 NEXCOMP is ahead of the general-purpose tools and behind the context-mixing leaders. On Silesia its
-45,461,484 bytes sit below bee -m3 (45,622,742) and freearc -m9 (45,542,009), just above
+45,456,856 bytes sit below bee -m3 (45,622,742) and freearc -m9 (45,542,009), just above
 TNSSRC (45,267,065) and Tangelo 2.3 (44,037,765), with paq8px_v215 at 27,825,511 and cmix at
 28,261,094 another 17 MB below. Those four figures are from Matt Mahoney's published tables, not
 measured here.
