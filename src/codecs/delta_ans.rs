@@ -246,19 +246,56 @@ pub fn delta_ans_decode(payload: &[u8]) -> Result<Vec<u8>, RansError> {
 mod tests {
     use super::*;
 
-    /// Every symbol appears in every lane, so the rANS tables are full of
-    /// tied fractional parts — the case where the tie order decides the
-    /// table, and where an unpinned order used to make the decoder disagree
-    /// with the encoder that wrote the file.
-    #[test]
-    fn roundtrip_lanes_with_every_symbol() {
-        let mut data = Vec::with_capacity(16384);
-        for i in 0..16384u32 {
-            data.push((i.wrapping_mul(2654435761) >> 13) as u8);
+    /// The counts of each lane, read back out of a payload.
+    fn lane_counts(payload: &[u8]) -> Vec<[u64; 256]> {
+        let lane_count = payload[1] as usize;
+        let mut pos = 6;
+        let mut out = Vec::with_capacity(lane_count);
+        for _ in 0..lane_count {
+            pos += 4; // symbol count
+            let mut counts = [0u64; 256];
+            for count in &mut counts {
+                *count = u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap()) as u64;
+                pos += 4;
+            }
+            let enc_len = u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4 + enc_len;
+            out.push(counts);
         }
+        out
+    }
+
+    /// Lanes whose counts actually produce ties: the case where the tie order
+    /// decides the table, and where an unpinned order used to make a decoder
+    /// disagree with the encoder that wrote the file. The test asserts the two
+    /// derivations disagree on this input, so it cannot quietly stop testing
+    /// anything the way its predecessor did.
+    #[test]
+    fn roundtrip_lanes_whose_tables_depend_on_the_tie_order() {
+        let mut state = 0x243f_6a88_85a3_08d3u64;
+        let data: Vec<u8> = (0..65536)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect();
         let encoded = delta_ans_encode(&data).unwrap();
         assert_eq!(encoded[0] & PINNED_TABLE, PINNED_TABLE, "new payloads pin the table");
+
+        let counts = lane_counts(&encoded);
+        let discriminating = counts
+            .iter()
+            .filter(|c| c.iter().filter(|&&n| n > 0).count() > 200)
+            .any(|c| normalize_freqs(c, 256) != normalize_freqs_unpinned(c, 256));
+        assert!(discriminating, "no lane distinguishes the two derivations, so the flag is untested");
         assert_eq!(delta_ans_decode(&encoded).unwrap(), data);
+
+        // The same payload read as if it came from before the flag existed
+        // decodes with the wrong tables: an error, or other bytes. Either way
+        // it is not the input, which is what the flag prevents.
+        let mut unflagged = encoded.clone();
+        unflagged[0] &= !PINNED_TABLE;
+        assert!(delta_ans_decode(&unflagged).map_or(true, |out| out != data));
     }
 
     /// A payload written before the tie order was pinned carries no flag and

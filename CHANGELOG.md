@@ -28,7 +28,8 @@ called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
   in-memory entry points now grow with what actually decodes.
 - Blocks are grouped so their estimated working memory stays under 2 GiB. Four
   4 MiB PPM blocks peaked at 5.3 GB on twelve threads and now peak at 1.5 GB,
-  which is what one PPM block costs.
+  which is what one PPM block costs. The trade is speed on PPM-heavy files:
+  those blocks now decode one at a time.
 
 ### Hardening
 

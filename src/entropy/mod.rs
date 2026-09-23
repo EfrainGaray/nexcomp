@@ -448,6 +448,26 @@ mod tests {
         }
     }
 
+    /// The other side of the canary: payloads written before the order was
+    /// pinned are read back through whatever the standard library's sort does,
+    /// so a change there is a compatibility break for those files. This test
+    /// is what says so out loud instead of leaving a fixture to fail.
+    #[test]
+    fn the_unpinned_derivation_still_matches_what_it_did() {
+        let mut counts = vec![1u64; 256];
+        for count in counts.iter_mut().skip(250) {
+            *count = 2;
+        }
+        assert_eq!(
+            normalize_freqs_unpinned(&counts, 256),
+            normalize_freqs(&counts, 256),
+            "the standard library's unstable sort changed its tie order: delta payloads written \
+             before the flag existed (tests/formats/nx13/codec-delta.nxc) no longer decode the \
+             way they were written, and normalize_freqs_unpinned has to reproduce the old order \
+             explicitly instead of deferring to sort_unstable_by_key"
+        );
+    }
+
     /// The canary for the pinned tie order: 250 symbols share a fractional
     /// part and only 160 of them can take a unit of the remainder, so the
     /// table says which order the remainder was handed out in. A standard

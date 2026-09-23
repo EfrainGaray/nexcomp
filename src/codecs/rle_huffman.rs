@@ -239,7 +239,7 @@ const NUM_LENGTH_CLASSES: usize = 256;
 
 /// The longest run a single length class can carry. Anything longer is split
 /// into consecutive runs of the same value, which the decoder concatenates.
-pub(crate) const MAX_RUN: usize = 2_250_592;
+pub const MAX_RUN: usize = 2_250_592;
 
 /// Encode a run length (minus 1) into (class, extra_bits_value, extra_bits_count).
 fn encode_length_class(len_minus_1: u32) -> (u16, u32, u8) {

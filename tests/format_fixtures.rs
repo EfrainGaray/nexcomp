@@ -12,7 +12,7 @@
 //!   cargo test --release --test format_fixtures -- --ignored write_format_fixtures
 
 use nexcomp::adaptive::{self, encode_with, try_adaptive_decompress, CodecId, BLOCK_SIZE};
-use nexcomp::codecs::bcj_filter;
+use nexcomp::codecs::{bcj_filter, rle_huffman};
 use nexcomp::crypto;
 use std::path::{Path, PathBuf};
 
@@ -126,6 +126,13 @@ fn fixtures_to_write() -> Vec<(String, Vec<u8>, Vec<u8>)> {
     let exe = inputs.iter().find(|(n, _)| *n == "exe").unwrap().1.clone();
     let bcj = forced_container(format, &exe, CodecId::LzmaStyle, true);
     out.push((format!("{dir}/bcj-lzma.nxc"), exe, bcj));
+
+    // A run longer than one length class can carry, so the bytes of a split
+    // run are frozen and not only round-tripped.
+    let mut split_run = vec![0u8; rle_huffman::MAX_RUN + 1];
+    split_run.extend_from_slice(&[9u8; 64]);
+    let split = forced_container(format, &split_run, CodecId::RleHuffman, false);
+    out.push((format!("{dir}/codec-rlehuf-split-run.nxc"), split_run, split));
 
     // Encrypted wrappers around the text fixture.
     let text = inputs.iter().find(|(n, _)| *n == "text").unwrap().1.clone();
