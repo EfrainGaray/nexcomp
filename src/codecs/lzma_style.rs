@@ -35,7 +35,7 @@ fn dist_slot(dist: u32) -> u32 {
         return dist;
     }
     let bsr = 31 - dist.leading_zeros(); // floor(log2(dist))
-    ((bsr as u32) << 1) + ((dist >> (bsr - 1)) & 1)
+    (bsr << 1) + ((dist >> (bsr - 1)) & 1)
 }
 
 /// Convert a distance slot back to the base distance and number of extra bits.

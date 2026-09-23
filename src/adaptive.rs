@@ -388,6 +388,7 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
 }
 
 /// Like [`parse_blocks`], and also the whole-file hash an NX14 file carries.
+#[allow(clippy::type_complexity)]
 fn parse_container(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>, Option<&[u8]>), AdaptiveError> {
     let &(_, footer_len) = CONTAINER_FORMATS
         .iter()

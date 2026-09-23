@@ -3,10 +3,11 @@
 // Guaranteed no regression vs v1.1
 
 use nexcomp::adaptive::{adaptive_compress, adaptive_decompress, codec_summary, compress_block_adaptive_pub};
-use nexcomp::classifier_v2::{classify_block_v2, BlockMetrics};
+use nexcomp::classifier_v2::BlockMetrics;
 use std::path::Path;
 use std::time::Instant;
 
+#[allow(clippy::type_complexity)]
 fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f64, f64, bool, String, f64)> {
     let data = std::fs::read(path).ok()?;
     let name = std::path::Path::new(path).file_name()?.to_str()?.to_string();

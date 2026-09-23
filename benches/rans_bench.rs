@@ -10,8 +10,8 @@ fn bench_rans_roundtrip(c: &mut Criterion) {
         // Generate test data with realistic English-like byte distribution
         let data: Vec<u8> = (0..size)
             .map(|i| {
-                let v = ((i * 7 + 13) % 96 + 32) as u8; // printable ASCII range
-                v
+                // printable ASCII range
+                ((i * 7 + 13) % 96 + 32) as u8
             })
             .collect();
 

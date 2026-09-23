@@ -95,7 +95,7 @@ fn compact_deserialize(data: &[u8]) -> Vec<lz77::Token> {
 fn compress_v5(data: &[u8]) -> (Vec<u8>, usize, usize, usize) {
     // Classify blocks on ORIGINAL data (pre-LZ77) to detect text vs binary
     let orig_block_types: Vec<BlockType> = data.chunks(BLOCK_SIZE)
-        .map(|chunk| classify_block_type(chunk))
+        .map(classify_block_type)
         .collect();
 
     // LZ77 on full input — use compact serialization
@@ -118,7 +118,7 @@ fn compress_v5(data: &[u8]) -> (Vec<u8>, usize, usize, usize) {
     let text_count = orig_block_types.iter().filter(|&&t| t == BlockType::Text).count();
     let majority_text = text_count > orig_block_types.len() / 2;
 
-    for (bi, chunk) in blocks.iter().enumerate() {
+    for chunk in blocks.iter() {
         // For LZ77 stream blocks: use the majority type from original data
         // Zeros are detected on the LZ77 stream itself (padding still shows as zeros)
         let lz_btype = classify_block_type(chunk);

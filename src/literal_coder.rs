@@ -1,7 +1,7 @@
-/// Context-dependent literal coder (LZMA-style).
-///
-/// Supports both normal literal encoding and matched-literal encoding where
-/// each bit is conditioned on the corresponding bit of a match byte.
+//! Context-dependent literal coder (LZMA-style).
+//!
+//! Supports both normal literal encoding and matched-literal encoding where
+//! each bit is conditioned on the corresponding bit of a match byte.
 
 use crate::range_coder::{Prob, RangeDecoder, RangeEncoder, PROB_INIT};
 
@@ -227,7 +227,7 @@ mod tests {
 
         let ops: Vec<Op> = (0..n)
             .map(|_| {
-                if rng.gen_bool(0.5) {
+                if rng.random_bool(0.5) {
                     Op::Normal(rng.random())
                 } else {
                     Op::Matched(rng.random(), rng.random())

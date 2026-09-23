@@ -1,4 +1,4 @@
-/// LZMA state machine with 12 states and associated probability arrays.
+//! LZMA state machine with 12 states and associated probability arrays.
 
 use crate::range_coder::{Prob, PROB_INIT};
 
@@ -15,6 +15,12 @@ const SHORTREP_NEXT: [usize; NUM_STATES] = [9, 9, 9, 9, 9, 9, 9, 11, 11, 11, 11,
 /// Tracks the current LZMA state (0 -- 11).
 pub struct LzmaState {
     pub state: usize,
+}
+
+impl Default for LzmaState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LzmaState {

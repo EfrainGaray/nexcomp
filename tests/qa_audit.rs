@@ -50,10 +50,8 @@ fn assert_adaptive_roundtrip(data: &[u8], label: &str) {
 /// Helper: verify LZMA codec roundtrip
 fn assert_lzma_roundtrip(data: &[u8], label: &str) {
     let encoded = lzma_style::encode_block(data);
-    let decoded = lzma_style::decode_block(&encoded).expect(&format!(
-        "LZMA decode failed for: {}",
-        label
-    ));
+    let decoded = lzma_style::decode_block(&encoded).unwrap_or_else(|_| panic!("LZMA decode failed for: {}",
+        label));
     assert_eq!(data, &decoded[..], "LZMA roundtrip failed for: {}", label);
 }
 
@@ -66,14 +64,10 @@ fn assert_bwt_roundtrip(data: &[u8], label: &str) {
 
 /// Helper: verify DeltaANS codec roundtrip
 fn assert_delta_ans_roundtrip(data: &[u8], label: &str) {
-    let encoded = delta_ans::delta_ans_encode(data).expect(&format!(
-        "DeltaANS encode failed for: {}",
-        label
-    ));
-    let decoded = delta_ans::delta_ans_decode(&encoded).expect(&format!(
-        "DeltaANS decode failed for: {}",
-        label
-    ));
+    let encoded = delta_ans::delta_ans_encode(data).unwrap_or_else(|_| panic!("DeltaANS encode failed for: {}",
+        label));
+    let decoded = delta_ans::delta_ans_decode(&encoded).unwrap_or_else(|_| panic!("DeltaANS decode failed for: {}",
+        label));
     assert_eq!(
         data, &decoded[..],
         "DeltaANS roundtrip failed for: {}",
@@ -374,7 +368,7 @@ fn qa_bwt_sais_adversarial() {
         }),
         ("binary all same 0x00", vec![0x00; 500]),
         ("binary all same 0xFF", vec![0xFF; 500]),
-        ("two-byte pattern", vec![0x00, 0xFF].repeat(5000)),
+        ("two-byte pattern", [0x00, 0xFF].repeat(5000)),
     ];
 
     for (label, data) in &cases {
@@ -576,10 +570,10 @@ fn qa_wire_format_truncated() {
     // We just verify it doesn't silently return wrong data
     let header_only = &compressed[..10];
     let result = std::panic::catch_unwind(|| {
-        let dec = adaptive_decompress(header_only);
+        
         // If it doesn't panic, it must NOT equal original
         // (unless original was empty, which it isn't here)
-        dec
+        adaptive_decompress(header_only)
     });
     // Either panics or returns something != original
     if let Ok(dec) = result {
@@ -684,9 +678,9 @@ fn qa_codec_individual_roundtrips() {
             {
                 let mut v = vec![0u8; 8192];
                 let mut val: u8 = 128;
-                for i in 0..v.len() {
+                for (i, slot) in v.iter_mut().enumerate() {
                     val = val.wrapping_add((i as u8 % 5).wrapping_mul(3));
-                    v[i] = val;
+                    *slot = val;
                 }
                 v
             },

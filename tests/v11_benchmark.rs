@@ -53,6 +53,7 @@ fn decompress_best(payload: &[u8]) -> Vec<u8> {
     lz77::lz77_decode(&tokens).expect("LZ77 decode failed")
 }
 
+#[allow(clippy::type_complexity)]
 fn bench_file(path: &str) -> Option<(String, usize, usize, usize, usize, f64, f64, f64, bool, String, f64)> {
     let data = std::fs::read(path).ok()?;
     let name = std::path::Path::new(path).file_name()?.to_str()?.to_string();
@@ -225,7 +226,7 @@ fn test_v11_rep_offset_stats() {
             let rep_pct = if total_matches > 0 { rep_count as f64 / total_matches as f64 * 100.0 } else { 0.0 };
 
             // Classify file type
-            let printable = data.iter().filter(|&&b| b >= 32 && b < 127).count();
+            let printable = data.iter().filter(|&&b| (32..127).contains(&b)).count();
             let ftype = if printable as f64 / data.len() as f64 > 0.85 { "text" }
                        else if data.iter().filter(|&&b| b == 0).count() > data.len() / 10 { "binary" }
                        else { "mixed" };

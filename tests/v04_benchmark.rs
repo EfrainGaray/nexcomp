@@ -253,7 +253,7 @@ fn decompress_rama_c(payload: &[u8]) -> Vec<u8> {
 
     for _ in 0..nblocks {
         let tag = payload[off]; off += 1;
-        let orig_len = u32::from_le_bytes([payload[off], payload[off+1], payload[off+2], payload[off+3]]) as usize;
+        let _orig_len = u32::from_le_bytes([payload[off], payload[off+1], payload[off+2], payload[off+3]]) as usize;
         off += 4;
         let comp_len = u32::from_le_bytes([payload[off], payload[off+1], payload[off+2], payload[off+3]]) as usize;
         off += 4;
@@ -376,12 +376,12 @@ fn test_full_benchmark() {
     // V3 pipeline
     let t0 = Instant::now();
     let v3 = compress_v3(&data);
-    let v3_comp_time = t0.elapsed().as_secs_f64();
+    let _v3_comp_time = t0.elapsed().as_secs_f64();
     let t0 = Instant::now();
     let v3_dec = decompress_v3(&v3);
-    let v3_dec_time = t0.elapsed().as_secs_f64();
+    let _v3_dec_time = t0.elapsed().as_secs_f64();
     assert_eq!(data, v3_dec, "V3 round-trip FAILED");
-    let v3_bpb = v3.len() as f64 * 8.0 / input_size as f64;
+    let _v3_bpb = v3.len() as f64 * 8.0 / input_size as f64;
 
     // Rama A
     let t0 = Instant::now();

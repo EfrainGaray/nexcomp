@@ -148,7 +148,7 @@ fn check_magic(data: &[u8]) -> Option<DomainType> {
         return None;
     }
     // FASTA: starts with '>'
-    if data[0] == b'>' && data.get(1).map_or(false, |&b| b.is_ascii_alphabetic()) {
+    if data[0] == b'>' && data.get(1).is_some_and(|&b| b.is_ascii_alphabetic()) {
         return Some(DomainType::DnaFasta);
     }
     // FASTQ: starts with '@'

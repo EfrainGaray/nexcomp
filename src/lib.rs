@@ -1,4 +1,8 @@
 // NEXCOMP library — public modules for benchmarks and tests
+
+// The codecs walk parallel arrays by position — symbol, slot, context, block —
+// and the index is the meaning, so those range loops stay as they are.
+#![allow(clippy::needless_range_loop)]
 pub mod ajedrez;
 pub mod classifier;
 pub mod lz77;

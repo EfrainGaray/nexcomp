@@ -139,7 +139,7 @@ impl ContextModel {
             }
 
             raw_freqs.push(freqs);
-            let table = build_table(&freqs.to_vec())?;
+            let table = build_table(freqs.as_ref())?;
             let dtable = build_decode_table(&table);
             tables.push(table);
             decode_tables.push(dtable);

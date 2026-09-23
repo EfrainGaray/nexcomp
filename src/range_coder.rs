@@ -1,7 +1,7 @@
-/// Binary range coder (LZMA-compatible).
-///
-/// Implements adaptive-probability bit coding with carry propagation,
-/// fixed-probability direct-bit coding, and tree-based byte coding.
+//! Binary range coder (LZMA-compatible).
+//!
+//! Implements adaptive-probability bit coding with carry propagation,
+//! fixed-probability direct-bit coding, and tree-based byte coding.
 
 pub const PROB_BITS: u32 = 11;
 pub const PROB_INIT: u16 = 1 << (PROB_BITS - 1); // 1024
@@ -19,6 +19,12 @@ pub struct RangeEncoder {
     cache: u8,
     cache_size: u64,
     output: Vec<u8>,
+}
+
+impl Default for RangeEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RangeEncoder {
@@ -168,8 +174,8 @@ impl<'a> RangeDecoder<'a> {
     /// Decode: returns the cumulative frequency that falls within current code.
     pub fn get_freq(&self, total: u32) -> u32 {
         let r = self.range / total;
-        let freq = (self.code / r).min(total - 1);
-        freq
+        
+        (self.code / r).min(total - 1)
     }
 
     /// Update decoder state after decoding symbol.

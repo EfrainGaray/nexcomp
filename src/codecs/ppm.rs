@@ -47,7 +47,7 @@ impl FreqTable {
     fn rescale(&mut self) {
         self.total = 0;
         for (_, c) in self.syms.iter_mut() {
-            *c = (*c + 1) / 2; // halve with rounding up
+            *c = (*c).div_ceil(2); // halve with rounding up
             self.total += *c as u32;
         }
     }

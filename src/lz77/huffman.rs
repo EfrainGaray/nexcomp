@@ -39,6 +39,12 @@ pub struct MruCache {
     pub recent: [u32; 4],
 }
 
+impl Default for MruCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MruCache {
     pub fn new() -> Self {
         Self { recent: [1, 2, 3, 4] }
@@ -414,6 +420,12 @@ pub struct BitWriter {
     buffer: Vec<u8>,
     current: u32,
     bits_in: u8,
+}
+
+impl Default for BitWriter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BitWriter {
@@ -815,7 +827,7 @@ fn encode_block(tokens: &[Token], writer: &mut BitWriter) {
 /// frequency statistics, just like DEFLATE's per-block adaptive trees.
 pub fn huffman_encode_blocked(tokens: &[Token], block_size: usize) -> Vec<u8> {
     let n_tokens = tokens.len();
-    let n_blocks = if n_tokens == 0 { 0 } else { (n_tokens + block_size - 1) / block_size };
+    let n_blocks = if n_tokens == 0 { 0 } else { n_tokens.div_ceil(block_size) };
 
     let mut result = Vec::new();
     result.extend_from_slice(&(n_tokens as u32).to_le_bytes());
@@ -1093,7 +1105,7 @@ fn encode_block_context1(tokens: &[Token], writer: &mut BitWriter) {
 ///     [encoded tokens with context-dependent literal coding]
 pub fn huffman_encode_context1(tokens: &[Token], block_size: usize) -> Vec<u8> {
     let n_tokens = tokens.len();
-    let n_blocks = if n_tokens == 0 { 0 } else { (n_tokens + block_size - 1) / block_size };
+    let n_blocks = if n_tokens == 0 { 0 } else { n_tokens.div_ceil(block_size) };
 
     let mut result = Vec::new();
     result.extend_from_slice(&(n_tokens as u32).to_le_bytes());
@@ -1574,23 +1586,17 @@ fn decode_block_rle(reader: &mut BitReader, block_n_tokens: usize) -> Vec<Token>
                 // Repeat previous length 3-6 times
                 let count = reader.read_bits(2) as usize + 3;
                 let prev = if all_lengths.is_empty() { 0 } else { *all_lengths.last().unwrap() };
-                for _ in 0..count {
-                    all_lengths.push(prev);
-                }
+                all_lengths.resize(all_lengths.len() + count, prev);
             }
             17 => {
                 // Repeat zero 3-10 times
                 let count = reader.read_bits(3) as usize + 3;
-                for _ in 0..count {
-                    all_lengths.push(0);
-                }
+                all_lengths.resize(all_lengths.len() + count, 0);
             }
             18 => {
                 // Repeat zero 11-138 times
                 let count = reader.read_bits(7) as usize + 11;
-                for _ in 0..count {
-                    all_lengths.push(0);
-                }
+                all_lengths.resize(all_lengths.len() + count, 0);
             }
             _ => panic!("Invalid code-length symbol: {}", sym),
         }
@@ -1746,7 +1752,7 @@ mod corpus_debug {
         // Test with 1000 diverse literals — similar to real corpus
         let tokens: Vec<Token> = (0..1000u32).map(|i| {
             if i % 10 == 0 {
-                Token::Match { offset: (i % 200 + 1) as u32, length: (i % 20 + 4) as u16 }
+                Token::Match { offset: (i % 200 + 1), length: (i % 20 + 4) as u16 }
             } else {
                 Token::Literal((i % 256) as u8)
             }
@@ -1762,7 +1768,7 @@ mod corpus_debug {
     #[test]
     fn test_all_literal_values() {
         // Every possible literal byte value
-        let mut tokens: Vec<Token> = (0..=255u8).map(|b| Token::Literal(b)).collect();
+        let mut tokens: Vec<Token> = (0..=255u8).map(Token::Literal).collect();
         // Add some matches too
         tokens.push(Token::Match { offset: 10, length: 10 });
         tokens.push(Token::Match { offset: 100000, length: 100 });
@@ -2374,16 +2380,16 @@ mod split_tests {
         let rle = rle_encode_lengths(&lengths);
         // Decode back and verify
         let mut decoded = Vec::new();
-        for &(sym, extra_count, extra_val) in &rle {
+        for &(sym, _extra_count, extra_val) in &rle {
             match sym {
                 0 => decoded.push(0),
                 17 => {
                     let count = extra_val as usize + 3;
-                    for _ in 0..count { decoded.push(0); }
+                    decoded.resize(decoded.len() + count, 0);
                 }
                 18 => {
                     let count = extra_val as usize + 11;
-                    for _ in 0..count { decoded.push(0); }
+                    decoded.resize(decoded.len() + count, 0);
                 }
                 _ => panic!("unexpected symbol for all-zero input"),
             }
@@ -2406,16 +2412,16 @@ mod split_tests {
                 }
                 16 => {
                     let count = extra_val as usize + 3;
-                    for _ in 0..count { decoded.push(prev); }
+                    decoded.resize(decoded.len() + count, prev);
                 }
                 17 => {
                     let count = extra_val as usize + 3;
-                    for _ in 0..count { decoded.push(0); }
+                    decoded.resize(decoded.len() + count, 0);
                     prev = 0;
                 }
                 18 => {
                     let count = extra_val as usize + 11;
-                    for _ in 0..count { decoded.push(0); }
+                    decoded.resize(decoded.len() + count, 0);
                     prev = 0;
                 }
                 _ => unreachable!(),

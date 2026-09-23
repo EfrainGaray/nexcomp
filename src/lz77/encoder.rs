@@ -19,6 +19,12 @@ pub struct EncoderStats {
     pub rep_matches: usize,
 }
 
+impl Default for Lz77Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Lz77Encoder {
     pub fn new() -> Self {
         Self {
@@ -176,7 +182,7 @@ impl Lz77Encoder {
                         None
                     };
 
-                    let use_pos1 = next1.map_or(false, |(_, nl, _)| nl > length);
+                    let use_pos1 = next1.is_some_and(|(_, nl, _)| nl > length);
 
                     if use_pos1 {
                         // pos+1 is longer — also check pos+2
@@ -195,7 +201,7 @@ impl Lz77Encoder {
                             None
                         };
 
-                        let use_pos2 = next2.map_or(false, |(_, nl, _)| nl > next1_len);
+                        let use_pos2 = next2.is_some_and(|(_, nl, _)| nl > next1_len);
 
                         if use_pos2 {
                             tokens.push(Token::Literal(data[pos]));

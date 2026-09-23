@@ -166,7 +166,7 @@ fn test_v6_full_benchmark() {
 
     // Huffman header overhead
     let header_bits = huffman::LITLEN_SYMBOLS * 4 + huffman::DIST_SYMBOLS * 4;
-    let header_bytes = (header_bits + 7) / 8;
+    let header_bytes = header_bits.div_ceil(8);
     let header_pct = header_bytes as f64 / avg_size as f64 * 100.0;
 
     eprintln!("Compresor            Bytes       bpb    Comp MB/s  Decomp MB/s");

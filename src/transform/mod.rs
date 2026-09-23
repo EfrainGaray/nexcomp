@@ -225,7 +225,7 @@ fn dna_forward(data: &[u8]) -> Vec<u8> {
 
     // Pack bases: 4 bases per byte, MSB first.
     let num_seq = seq_bases.len();
-    let packed_len = (num_seq + 3) / 4;
+    let packed_len = num_seq.div_ceil(4);
     let mut packed = vec![0u8; packed_len];
     for (idx, &b) in seq_bases.iter().enumerate() {
         let bits = base_to_bits(b); // non-ACGT maps to 00, we fix via n_positions
@@ -725,7 +725,7 @@ mod tests {
         // The packed bases portion should be ceil(1000/4) = 250 bytes.
         // Total output includes metadata overhead, but should be well under input size.
         // Packed bases alone: 250 bytes vs 1000 input bytes = 4:1
-        let packed_bases_len = (input.len() + 3) / 4; // 250
+        let packed_bases_len = input.len().div_ceil(4); // 250
         assert_eq!(packed_bases_len, 250, "Packed bases should be 4:1 ratio");
         // The total transformed size should be much less than input.
         assert!(

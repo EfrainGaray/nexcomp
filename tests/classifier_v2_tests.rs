@@ -181,8 +181,8 @@ fn test_classify_calgary_corpus() {
     assert!(!entries.is_empty(), "Calgary corpus directory is empty");
 
     println!(
-        "\n{:<12} {:>7} {:>6} {:>6} {:>5} {:>5} {:>8} {:>6}  {}",
-        "FILE", "ENTROPY", "ASCII", "ACORR", "UNIQ", "RUN", "VAR", "LZ77", "CODEC"
+        "\n{:<12} {:>7} {:>6} {:>6} {:>5} {:>5} {:>8} {:>6}  CODEC",
+        "FILE", "ENTROPY", "ASCII", "ACORR", "UNIQ", "RUN", "VAR", "LZ77"
     );
     println!("{}", "-".repeat(80));
 

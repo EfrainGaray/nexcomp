@@ -9,6 +9,12 @@ pub struct HashChain {
     pub prev: Vec<u32>,
 }
 
+impl Default for HashChain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HashChain {
     pub fn new() -> Self {
         Self {

@@ -15,16 +15,6 @@ fn compress_blocked(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn compress_global(data: &[u8]) -> Vec<u8> {
-    let mut enc = Lz77Encoder::new();
-    let (tokens, _) = enc.encode(data);
-    let huff = huffman::huffman_encode(&tokens);
-    let mut out = Vec::with_capacity(4 + huff.len());
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.extend_from_slice(&huff);
-    out
-}
-
 fn decompress_blocked(payload: &[u8]) -> Vec<u8> {
     let tokens = huffman::huffman_decode_blocked(&payload[4..]);
     lz77::lz77_decode(&tokens).expect("LZ77 decode failed")
@@ -37,7 +27,7 @@ fn bench_file(path: &str) -> Option<(String, usize, usize, usize, f64, f64, bool
 
     let t0 = Instant::now();
     let compressed = compress_blocked(&data);
-    let comp_time = t0.elapsed().as_secs_f64();
+    let _comp_time = t0.elapsed().as_secs_f64();
 
     let decompressed = decompress_blocked(&compressed);
     let verify = data == decompressed;

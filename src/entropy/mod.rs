@@ -194,6 +194,12 @@ pub struct RansEncoder {
     output: Vec<u8>,
 }
 
+impl Default for RansEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RansEncoder {
     pub fn new() -> Self {
         RansEncoder {
