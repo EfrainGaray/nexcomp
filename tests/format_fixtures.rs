@@ -207,8 +207,9 @@ fn write_format_fixtures() {
     }
     let manifest_path = formats_dir().join("MANIFEST");
     let merged = match std::fs::read_to_string(&manifest_path) {
-        // Keep the lines of formats this build no longer writes.
-        Ok(old) if !regenerate => {
+        // Keep the lines of fixtures this build does not write, frozen sets
+        // included; regenerating replaces only the files it rewrites.
+        Ok(old) => {
             let fresh: Vec<&str> = manifest.lines().collect();
             let kept: Vec<&str> = old
                 .lines()

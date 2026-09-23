@@ -520,7 +520,17 @@ pub fn encode_with(data: &[u8], models: u8) -> Vec<u8> {
 }
 
 pub fn encode(data: &[u8]) -> Vec<u8> {
-    encode_with(data, ALL_MODELS)
+    // The match model pays on repetitive binaries and costs on pure numeric
+    // data, and the header carries the mask, so try both and keep the smaller.
+    let (with, without) = rayon::join(
+        || encode_with(data, ALL_MODELS),
+        || encode_with(data, ALL_MODELS & !MODEL_MATCH),
+    );
+    if without.len() < with.len() {
+        without
+    } else {
+        with
+    }
 }
 
 /// Decode a payload from [`encode`]; `None` if the header is malformed.
