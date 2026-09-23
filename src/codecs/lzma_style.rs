@@ -195,7 +195,9 @@ impl DistanceCoder {
             (high << NUM_ALIGN_BITS) | low
         };
 
-        base + extra + 1 // convert back to 1-based
+        // A hostile stream can reach the top slot, where base + extra is
+        // already u32::MAX; saturating leaves a distance copy_match rejects.
+        base.saturating_add(extra).saturating_add(1) // convert back to 1-based
     }
 }
 
