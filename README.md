@@ -7,7 +7,7 @@ by fixtures, the decoder is bounded and fuzzed, and every number below comes fro
 records how it ran. A release may stop writing a file format but never stops reading one an
 earlier release wrote ([docs/FORMAT.md](docs/FORMAT.md)); the CLI and the library API can still
 change between versions. It remains a research compressor: it is slow to compress, it has not
-been through an independent audit of this release, and nothing but this project writes NX14.
+been through an independent audit of this release, and nothing but this project writes NX15.
 
 ## Results
 
@@ -25,10 +25,10 @@ Measured by `scripts/benchmark.sh` on the 1.7.0 build; environment, tool version
 numbers in [`bench/results/20260923T020706Z-darwin-x86_64.md`](bench/results/20260923T020706Z-darwin-x86_64.md).
 
 NEXCOMP is ahead of the general-purpose tools and behind the context-mixing leaders. On Silesia its
-45,456,856 bytes sit below bee -m3 (45,622,742) and freearc -m9 (45,542,009), just above
-TNSSRC (45,267,065) and Tangelo 2.3 (44,037,765), with paq8px_v215 at 27,825,511 and cmix at
-28,261,094 another 17 MB below. Those four figures are from Matt Mahoney's published tables, not
-measured here.
+45,456,856 bytes sit below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009), above tangelo 2.3
+(44,037,765) and TNSSRC 0.1.0 (43,724,575), with paq8px_v215 -12L at 27,825,511 and
+precomp v0.4.7 -cn | cmix v21 at 28,261,094 another 17.6 MB below. Those figures are from Matt
+Mahoney's published Silesia table, not measured here.
 
 ## Installation
 
@@ -36,7 +36,8 @@ measured here.
 cargo build --release
 ```
 
-The binary is placed at `target/release/nexcomp`. Requires Rust 1.75+.
+The binary is placed at `target/release/nexcomp`. Requires Rust 1.85+ (the locked
+dependencies are edition 2024).
 
 ## Usage
 
@@ -138,8 +139,10 @@ the original. The corpora are pinned by SHA-256 in `bench/manifest.tsv`; Calgary
 - **The ratio gap that matters** is against the context-mixing leaders (paq8px, cmix), not against
   the general-purpose tools. On Silesia it is concentrated in `mozilla`, `webster` and `samba`.
 - **Memory.** Compression holds several blocks and their candidates at once; `RAYON_NUM_THREADS`
-  bounds it. Decompression streams block by block.
-- **Young format.** NX14 and NXE3 are new in 1.6.0. From here on a release may stop writing a
+  bounds it. Decompression writes block by block, and groups them so their working memory stays
+  under 2 GiB — but a single PPM block costs about 1.5 GB on its own, and the archive itself is
+  read into memory, so a `.nxc` larger than RAM cannot be decompressed.
+- **Young format.** NX15 is new in 1.8.0, NXE3 in 1.6.0. From here on a release may stop writing a
   format but never stops reading one an earlier release wrote; the pre-release `NXC\x01`, `NX12`
   and `NXE1` files are refused, see [docs/FORMAT.md](docs/FORMAT.md).
 

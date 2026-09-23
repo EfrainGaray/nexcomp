@@ -1,8 +1,8 @@
 [package]
 name = "nexcomp"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 description = "NEXCOMP — Next-generation lossless compressor"
 license = "MIT"
 

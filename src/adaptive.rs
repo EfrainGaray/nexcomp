@@ -312,12 +312,13 @@ pub fn decompress_block_adaptive(codec: CodecId, data: &[u8], expected_len: usiz
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
 /// Magic of the container this build writes: NX13 plus a whole-file hash.
-pub const CONTAINER_MAGIC: &[u8; 4] = b"NX14";
+pub const CONTAINER_MAGIC: &[u8; 4] = b"NX15";
 
 /// Containers this build reads, with the length of their footer.
-const CONTAINER_FORMATS: [(&[u8; 4], usize); 2] = [(b"NX13", 0), (b"NX14", FILE_DIGEST_LEN)];
+const CONTAINER_FORMATS: [(&[u8; 4], usize); 3] =
+    [(b"NX13", 0), (b"NX14", FILE_DIGEST_LEN), (b"NX15", FILE_DIGEST_LEN)];
 
-/// BLAKE3 of the original bytes, in the NX14 footer.
+/// BLAKE3 of the original bytes, in the NX15 (and NX14) footer.
 const FILE_DIGEST_LEN: usize = 32;
 
 /// The container format of `payload`, if this build reads it.
@@ -349,7 +350,7 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 /// Full adaptive compress: data -> wire format
-/// Format: [4B magic "NX14"][8B orig_len LE][4B block_count LE] then per block:
+/// Format: [4B magic "NX15"][8B orig_len LE][4B block_count LE] then per block:
 ///         [1B codec_id][1B bcj_flag][4B orig_len LE][4B comp_len LE][4B crc32 LE][compressed_data]
 /// and a [32B BLAKE3 of the original] footer. Blocks are compressed in parallel.
 pub fn adaptive_compress(data: &[u8]) -> Vec<u8> {
@@ -396,7 +397,7 @@ pub fn parse_blocks(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>), Adapt
     Ok((orig_len, blocks))
 }
 
-/// Like [`parse_blocks`], and also the whole-file hash an NX14 file carries.
+/// Like [`parse_blocks`], and also the whole-file hash an NX15 file carries.
 #[allow(clippy::type_complexity)]
 fn parse_container(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>, Option<&[u8]>), AdaptiveError> {
     let &(_, footer_len) = CONTAINER_FORMATS
@@ -487,7 +488,7 @@ fn decode_block(block: &BlockInfo<'_>) -> Result<Vec<u8>, AdaptiveError> {
 /// Decode a container into `out`, block by block, so memory stays bounded by
 /// the blocks in flight instead of the whole output. Returns the bytes written.
 ///
-/// The hash of an NX14 file is checked once everything is written, so a caller
+/// The hash of an NX15 file is checked once everything is written, so a caller
 /// writing to a file must discard it if this returns an error.
 pub fn decompress_to<W: std::io::Write>(payload: &[u8], out: &mut W) -> Result<usize, AdaptiveError> {
     let (orig_len, blocks, digest) = parse_container(payload)?;
@@ -644,8 +645,8 @@ mod tests {
     fn test_adaptive_roundtrip_runs() {
         // Data with long runs (image-like)
         let mut data = Vec::new();
-        for _ in 0..100 { data.extend(std::iter::repeat(0x00).take(500)); }
-        for _ in 0..50 { data.extend(std::iter::repeat(0xFF).take(300)); }
+        for _ in 0..100 { data.extend(std::iter::repeat_n(0x00, 500)); }
+        for _ in 0..50 { data.extend(std::iter::repeat_n(0xFF, 300)); }
         let compressed = adaptive_compress(&data);
         let decompressed = adaptive_decompress(&compressed);
         assert_eq!(data, decompressed);

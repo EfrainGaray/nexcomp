@@ -61,7 +61,7 @@ hostile header cannot demand unbounded memory. Salt and nonce come from `OsRng`
 `docs/FORMAT.md` specifies every format and states the policy: a release may
 stop writing a format but never stops reading one an earlier release wrote.
 `7d8f67f` freezes golden fixtures for NX13, NXE2 and NXE3 and `99d4ee9` adds
-them for NX14: 36 files under `tests/formats`, one per codec (hand-framed, so
+them for NX14: 56 files under `tests/formats` today, one per codec (hand-framed, so
 every decoder is pinned and not only the codecs the selector picks), plus a BCJ
 block, a two-block file, and the encrypted wrappers. `tests/formats/MANIFEST`
 records the length and BLAKE3 of each original; the suite decodes all of them on

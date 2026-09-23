@@ -103,7 +103,7 @@ fn forced_container(magic: &[u8; 4], data: &[u8], codec: CodecId, bcj: bool) -> 
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     out.extend_from_slice(&crc32(data).to_le_bytes());
     out.extend_from_slice(&payload);
-    if magic == b"NX14" {
+    if magic != b"NX13" {
         out.extend_from_slice(blake3::hash(data).as_bytes());
     }
     out

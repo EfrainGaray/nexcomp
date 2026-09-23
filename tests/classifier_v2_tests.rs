@@ -122,8 +122,8 @@ fn test_classify_random_passthrough() {
 fn test_classify_rle_data() {
     let mut data = Vec::with_capacity(4096);
     for _ in 0..64 {
-        data.extend(std::iter::repeat(0x00).take(30));
-        data.extend(std::iter::repeat(0xFF).take(34));
+        data.extend(std::iter::repeat_n(0x00, 30));
+        data.extend(std::iter::repeat_n(0xFF, 34));
     }
     let (choice, m) = classify_block_v2(&data);
     assert!(m.unique_bytes <= 8, "RLE test data should have few unique bytes");

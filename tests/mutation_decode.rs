@@ -122,7 +122,7 @@ fn runs(len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
     while out.len() < len {
         let byte = rng.next() as u8 & 0x7;
-        out.extend(std::iter::repeat(byte).take(1 + rng.below(40)));
+        out.extend(std::iter::repeat_n(byte, 1 + rng.below(40)));
     }
     out.truncate(len);
     out

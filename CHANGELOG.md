@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.8.0 — 2026-09-23
+
+Everything an independent audit of 1.7.0 asked for before the format could be
+called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
+
+### Correctness
+
+- **The delta codec no longer depends on the compiler.** `normalize_freqs`
+  handed the rounding remainder out in the order the standard library's
+  unstable sort left tied symbols in, so a block written here failed to decode
+  when the same source was built with rustc 1.75 or 1.80. Ties now break by
+  symbol index; payloads carry bit `0x80` on their delta type to say so, and
+  older ones keep decoding through the old derivation.
+- **The compressor no longer panics on long runs.** A run of more than
+  2,250,592 equal bytes fits in a block but in no RLE length class, and
+  compressing a sparse file died with exit 101. Runs are split; a candidate
+  codec that panics is now dropped instead of taking the process with it.
+- **A zero-byte file is not an archive.** `compress` used to write nothing for
+  an empty input and `decompress` accepted any zero-byte file as an empty
+  original, so a truncated archive reported a successful restore.
+
+### Resources
+
+- `try_adaptive_decompress` grew the output as the container declared it: a
+  2.8 MB file with 200,000 empty block headers asked for 781 GiB. Both
+  in-memory entry points now grow with what actually decodes.
+- Blocks are grouped so their estimated working memory stays under 2 GiB. Four
+  4 MiB PPM blocks peaked at 5.3 GB on twelve threads and now peak at 1.5 GB,
+  which is what one PPM block costs.
+
+### Fixtures, fuzzing and docs
+
+- The MANIFEST is complete by construction and the suite asserts it matches the
+  files on disk: the 17 NX13 fixtures had fallen out of it and had not been
+  decoded since `dc07175`.
+- The fuzz targets reach the sizes the format allows — the container target
+  capped output at 64 KiB and the block target took the block length as a u16,
+  so neither had ever seen a multi-block file or a full 4 MiB block.
+- Corrected claims: the Silesia leaderboard figures (TNSSRC 0.1.0 is
+  43,724,575 and 28,261,094 is precomp + cmix v21), the MSRV (1.85, not 1.75,
+  with the committed lock), the NXE3 length field (u64), the fixture count, and
+  what "streams" means on the decoding side.
+
 ## 1.7.0 — 2026-09-22
 
 The first release meant to be audited as a stable one: the formats are

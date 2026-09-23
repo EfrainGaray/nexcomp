@@ -246,10 +246,10 @@ mod tests {
     fn test_rle_roundtrip_mixed() {
         let mut data = Vec::new();
         // Some runs of different bytes.
-        data.extend(std::iter::repeat(0xAA).take(300));
-        data.extend(std::iter::repeat(0x55).take(1));
-        data.extend(std::iter::repeat(0xFF).take(20000));
-        data.extend(std::iter::repeat(0x00).take(5));
+        data.extend(std::iter::repeat_n(0xAA, 300));
+        data.extend(std::iter::repeat_n(0x55, 1));
+        data.extend(std::iter::repeat_n(0xFF, 20000));
+        data.extend(std::iter::repeat_n(0x00, 5));
         data.push(0x42);
 
         let encoded = rle_encode(&data);

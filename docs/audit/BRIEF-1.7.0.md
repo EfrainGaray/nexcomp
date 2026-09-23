@@ -28,12 +28,12 @@ recorded once the restored bytes hashed to the original.
 Measured by `scripts/benchmark.sh`; the artifact with the environment, the
 per-file table and the tool versions is [`bench/results/20260923T020706Z-darwin-x86_64.md`](../../bench/results/20260923T020706Z-darwin-x86_64.md).
 
-Against the published leaderboards (Matt Mahoney's tables, September 2026, not
-measured here): on Silesia NEXCOMP sits below bee -m3 (45,622,742) and
-freearc -m9 (45,542,009), above TNSSRC (45,267,065) and Tangelo 2.3
-(44,037,765), with paq8px_v215 (27,825,511) and cmix (28,261,094) another 17 MB
-below. The gap that matters is against the context-mixing leaders, not against
-the general-purpose tools.
+Against the published leaderboard (Matt Mahoney's Silesia table, not measured
+here): NEXCOMP sits below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009),
+above tangelo 2.3 (44,037,765) and TNSSRC 0.1.0 (43,724,575), with
+paq8px_v215 -12L (27,825,511) and precomp v0.4.7 -cn | cmix v21 (28,261,094)
+another 17.6 MB below. The gap that matters is against the context-mixing
+leaders, not against the general-purpose tools.
 
 ## 2. What changed since the audited baseline
 
@@ -108,10 +108,9 @@ The first audit read `6d55700`. Since then, besides the twelve findings:
 ## 4. Known issues — confirm, prioritise, or tell us we are wrong
 
 - **24 h fuzzing is not done.** See P0 item 3.
-- **Whole-file input.** Compression reads the whole input into memory; only
-  decompression streams block by block. The NXE3 header stores the input length
-  as u32, so it is wrong above 4 GiB (authenticated metadata only, the decoder
-  does not rely on it).
+- **Whole-file input.** Both sides read the whole file into memory; only the
+  decoder's *output* is written block by block, so an archive larger than RAM
+  cannot be decompressed.
 - **Compression is slow** — Silesia takes about 9 minutes here, decompression
   about 2. The context-mixing codecs are tried on blocks they rarely win.
 - **Young formats.** NX14 and NXE3 were introduced in 1.6.0 and nothing but this

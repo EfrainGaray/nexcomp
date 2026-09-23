@@ -371,7 +371,7 @@ pub fn compress_report(data: &[u8], opts: &Options) -> (Vec<u8>, Report) {
     for &repr in &opts.reprs {
         for &block_id in &opts.block_ids {
             let (out, report) = compress_config(data, repr, block_id, opts);
-            if best.as_ref().map_or(true, |(b, _)| out.len() < b.len()) {
+            if best.as_ref().is_none_or(|(b, _)| out.len() < b.len()) {
                 best = Some((out, report));
             }
         }

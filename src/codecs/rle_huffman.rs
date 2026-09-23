@@ -546,10 +546,10 @@ mod tests {
     #[test]
     fn test_rle_encode_decode_mixed() {
         let mut data = Vec::new();
-        data.extend(std::iter::repeat(0xAA).take(50));
-        data.extend(std::iter::repeat(0xBB).take(30));
+        data.extend(std::iter::repeat_n(0xAA, 50));
+        data.extend(std::iter::repeat_n(0xBB, 30));
         data.push(0xCC);
-        data.extend(std::iter::repeat(0xAA).take(20));
+        data.extend(std::iter::repeat_n(0xAA, 20));
 
         let runs = rle_encode(&data);
         assert_eq!(runs.len(), 4);
@@ -643,8 +643,8 @@ mod tests {
     fn test_full_roundtrip_two_values() {
         let mut data = Vec::new();
         for _ in 0..100 {
-            data.extend(std::iter::repeat(0x00).take(50));
-            data.extend(std::iter::repeat(0xFF).take(30));
+            data.extend(std::iter::repeat_n(0x00, 50));
+            data.extend(std::iter::repeat_n(0xFF, 30));
         }
         let compressed = rle_huffman_encode(&data);
         let decompressed = rle_huffman_decode(&compressed);
@@ -660,9 +660,9 @@ mod tests {
     #[test]
     fn test_full_roundtrip_long_runs() {
         let mut data = Vec::new();
-        data.extend(std::iter::repeat(0x01).take(100_000));
-        data.extend(std::iter::repeat(0x02).take(200_000));
-        data.extend(std::iter::repeat(0x03).take(50_000));
+        data.extend(std::iter::repeat_n(0x01, 100_000));
+        data.extend(std::iter::repeat_n(0x02, 200_000));
+        data.extend(std::iter::repeat_n(0x03, 50_000));
 
         let compressed = rle_huffman_encode(&data);
         let decompressed = rle_huffman_decode(&compressed);
@@ -722,9 +722,9 @@ mod tests {
     fn test_compression_vs_plain_rle() {
         let mut data = Vec::new();
         for _ in 0..500 {
-            data.extend(std::iter::repeat(0x00).take(100));
-            data.extend(std::iter::repeat(0x01).take(50));
-            data.extend(std::iter::repeat(0x02).take(20));
+            data.extend(std::iter::repeat_n(0x00, 100));
+            data.extend(std::iter::repeat_n(0x01, 50));
+            data.extend(std::iter::repeat_n(0x02, 20));
         }
 
         let rle_only = crate::codecs::rle_encode(&data);

@@ -17,15 +17,22 @@ Every integer is little-endian. Offsets are in bytes.
 
 | magic | what it is | written by | read by |
 |---|---|---|---|
-| `NX14` | container with a whole-file hash | 1.6.0 and later | 1.6.0 and later |
+| `NX15` | container with a whole-file hash | 1.8.0 and later | 1.8.0 and later |
+| `NX14` | the same layout, codec payloads of 1.6.0-1.7.0 | 1.6.0-1.7.0 | 1.6.0 and later |
 | `NX13` | container without the hash | 1.5.x | 1.5.x and later |
 | `NXE3` | encrypted wrapper, KDF costs in the header | 1.6.0 and later | 1.6.0 and later |
 | `NXE2` | encrypted wrapper, fixed KDF costs | 1.5.x | 1.5.x and later |
 
-## Container: NX14 (and NX13)
+`NX15` and `NX14` share a layout; what changed is inside the codec payloads, so
+they are told apart by the magic rather than left to fail on a checksum. An
+`NX14` file written by 1.6.0 and one written by 1.7.0 can differ in the
+stride-cm model mask, which is why a 1.6.0 build rejects some `NX14` files: the
+magic below is where that line is drawn properly.
+
+## Container: NX15 (and NX14, NX13)
 
 ```
-[0..4]   magic "NX14"        (NX13 is the same layout without the footer)
+[0..4]   magic "NX15"        (NX13 is the same layout without the footer)
 [4..12]  original length     u64
 [12..16] block count         u32   == ceil(original length / 4 MiB)
 then, for each block:
@@ -35,7 +42,7 @@ then, for each block:
   [6..10]  payload length    u32
   [10..14] CRC-32 of block   u32   (IEEE 802.3, of the block's original bytes)
   [14..]   payload
-footer (NX14 only):
+footer (NX15 and NX14 only):
   [0..32]  BLAKE3 of the whole original
 ```
 
@@ -59,16 +66,32 @@ declare an arbitrary block geometry.
 The BCJ flag means the block was passed through the x86 call/jump filter before
 the codec, and must be passed through its inverse after decoding.
 
+Two codec payloads carry a field that says how they were modelled, and a
+decoder that does not know a value must refuse the block rather than guess:
+
+- **stride-cm** (id 7) stores the set of active models as a byte. 1.6.0 wrote
+  masks within `0x1f`; 1.7.0 added the match model, `0x20`. A build that does
+  not know a bit refuses the block.
+- **delta** (id 2) has bit `0x80` of its delta type set when the rANS tables
+  are derived with the pinned tie order. Payloads without it come from an
+  earlier release and are decoded through the old derivation, which depends on
+  the standard library's sort and is why the order was pinned.
+
 ### What the decoder guarantees
 
 - Any byte string is either decoded or reported as an error: no panic, no
-  unbounded allocation, no silent wrong output. Checked by
-  `tests/mutation_decode.rs` and the targets in `fuzz/`.
+  silent wrong output. Checked by `tests/mutation_decode.rs` and the targets
+  in `fuzz/`.
 - Each block's decoded bytes are checked against the block length and CRC-32;
-  the whole output is checked against the BLAKE3 footer in NX14.
+  the whole output is checked against the BLAKE3 footer in NX15 and NX14.
 - Every declared length inside a codec payload is checked against the block
-  length before the codec runs, so a corrupt file cannot make a decoder
-  allocate or loop beyond what its block could hold.
+  length before the codec runs, and the output buffer grows with what decodes
+  rather than with what the container declares, so neither a hostile header nor
+  a corrupt payload can force an allocation the file does not back.
+- What a block's own codec needs while decoding it is a different bound: PPM
+  (id 6) keeps a context table per byte of its block and costs about 1.5 GB for
+  a full 4 MiB block. Blocks are grouped so that their estimated working memory
+  stays under 2 GiB, but a single block can still exceed it.
 - `try_adaptive_decompress_limited` refuses a file that declares more output
   than the caller allows, before allocating for it.
 

@@ -1008,8 +1008,8 @@ fn qa_adaptive_corpus_patterns() {
     // "pic"-like: few unique bytes, long runs
     let mut pic = Vec::with_capacity(100000);
     for _ in 0..500 {
-        pic.extend(std::iter::repeat(0x00).take(150));
-        pic.extend(std::iter::repeat(0xFF).take(50));
+        pic.extend(std::iter::repeat_n(0x00, 150));
+        pic.extend(std::iter::repeat_n(0xFF, 50));
     }
     assert_adaptive_roundtrip(&pic, "pic-like binary");
 

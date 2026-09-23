@@ -140,7 +140,7 @@ fn output_limit_refuses_files_that_expand_beyond_it() {
 fn a_container_that_declares_terabytes_allocates_none_of_them() {
     let _measuring = measuring();
     let blocks = 200_000usize;
-    let mut file = b"NX14".to_vec();
+    let mut file = b"NX15".to_vec();
     file.extend_from_slice(&((blocks * BLOCK_SIZE) as u64).to_le_bytes());
     file.extend_from_slice(&(blocks as u32).to_le_bytes());
     for _ in 0..blocks {
