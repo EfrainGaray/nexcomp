@@ -55,6 +55,8 @@ pub enum AdaptiveError {
     DigestMismatch,
     #[error("writing the output failed: {0}")]
     Io(String),
+    #[error("the file declares {0} bytes, more than this build can address")]
+    TooLargeForThisBuild(u64),
 }
 
 impl CodecId {
@@ -407,8 +409,10 @@ fn parse_container(payload: &[u8]) -> Result<(usize, Vec<BlockInfo<'_>>, Option<
     if payload.len() < FILE_HEADER_LEN + footer_len {
         return Err(AdaptiveError::Truncated);
     }
-    let orig_len = usize::try_from(u64::from_le_bytes(read_le(payload, 4)?))
-        .map_err(|_| AdaptiveError::Truncated)?;
+    let declared = u64::from_le_bytes(read_le(payload, 4)?);
+    // On a 32-bit build a perfectly good file can be larger than the address
+    // space, which is not the same thing as a truncated one.
+    let orig_len = usize::try_from(declared).map_err(|_| AdaptiveError::TooLargeForThisBuild(declared))?;
     let block_count = u32::from_le_bytes(read_le(payload, 12)?) as usize;
     // Every block needs at least its header, so a hostile count cannot force a huge reservation.
     if block_count > (payload.len() - FILE_HEADER_LEN - footer_len) / BLOCK_HEADER_LEN {

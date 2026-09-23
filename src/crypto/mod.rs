@@ -62,8 +62,11 @@ pub const NXE2_KDF: KdfParams = KdfParams { m_cost_kib: 19_456, t_cost: 2, p_cos
 pub const DEFAULT_KDF: KdfParams = KdfParams { m_cost_kib: 65_536, t_cost: 3, p_cost: 1 };
 
 /// Largest costs a file may request, so a hostile header cannot demand
-/// gigabytes of memory or minutes of work before authentication fails.
-pub const MAX_KDF: KdfParams = KdfParams { m_cost_kib: 1 << 20, t_cost: 16, p_cost: 16 };
+/// gigabytes of memory or minutes of work before authentication fails. Four
+/// times the default is room for a file written with a stronger setting; the
+/// old ceiling of 1 GiB and 16 passes cost a minute of work on an 85-byte
+/// forgery, and nothing has ever written above the default.
+pub const MAX_KDF: KdfParams = KdfParams { m_cost_kib: 262_144, t_cost: 8, p_cost: 4 };
 
 impl KdfParams {
     pub fn within_limits(&self) -> bool {

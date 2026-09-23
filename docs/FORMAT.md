@@ -94,6 +94,10 @@ decoder that does not know a value must refuse the block rather than guess:
   stays under 2 GiB, but a single block can still exceed it.
 - `try_adaptive_decompress_limited` refuses a file that declares more output
   than the caller allows, before allocating for it.
+- What the decoder does not bound is how far a *valid* file expands: a few
+  kilobytes of run-length blocks restore to gigabytes. Memory stays bounded
+  because the output is written block by block, but disk is not, so a caller
+  taking untrusted files should pass a limit or watch the destination.
 
 ## Encrypted wrapper: NXE3 (and NXE2)
 

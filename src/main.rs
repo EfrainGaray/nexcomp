@@ -28,6 +28,8 @@ enum NexcompError {
     NoPassword,
     #[error("passwords do not match")]
     PasswordMismatch,
+    #[error("NEXCOMP_PASSWORD is not valid UTF-8")]
+    PasswordNotUnicode,
 }
 
 fn pre_release(data: &[u8]) -> Option<&'static str> {
@@ -106,21 +108,46 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     compressed
 }
 
+/// Where the output is built before it takes its final name, so an interrupted
+/// run cannot leave a partial file looking like the real one, and a failure
+/// leaves whatever was already at `path` untouched.
+fn partial_path(path: &str) -> String {
+    format!("{path}.part{}", std::process::id())
+}
+
+/// Write `bytes` to `path` through a temporary file in the same directory.
+fn write_atomically(path: &str, bytes: &[u8]) -> io::Result<()> {
+    let partial = partial_path(path);
+    fs::write(&partial, bytes).inspect_err(|_| {
+        let _ = fs::remove_file(&partial);
+    })?;
+    fs::rename(&partial, path).inspect_err(|_| {
+        let _ = fs::remove_file(&partial);
+    })
+}
+
 /// Decode `data` straight to `path`, so a file that expands to more than fits
 /// in memory is written block by block instead of being assembled first.
 fn decompress_to_file(data: &[u8], path: &str) -> Result<usize, NexcompError> {
     if adaptive::container_format(data).is_none() {
         return Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
     }
-    let mut out = io::BufWriter::new(fs::File::create(path)?);
+    let partial = partial_path(path);
+    let mut out = io::BufWriter::new(fs::File::create(&partial)?);
     let written = adaptive::decompress_to(data, &mut out).and_then(|n| {
         out.flush().map_err(|e| adaptive::AdaptiveError::Io(e.to_string()))?;
         Ok(n)
     });
+    drop(out);
     if written.is_err() {
-        // Never leave a half-written or unverified file behind.
-        let _ = fs::remove_file(path);
+        // Never leave a half-written or unverified file behind, and never
+        // destroy what was already at the destination.
+        let _ = fs::remove_file(&partial);
+        return Ok(written?);
     }
+    fs::rename(&partial, path).inspect_err(|_| {
+        let _ = fs::remove_file(&partial);
+    })?;
     Ok(written?)
 }
 
@@ -144,8 +171,13 @@ fn password(argv: Option<String>, file: Option<&str>, confirm: bool) -> Result<Z
         pw.truncate(len);
         return Ok(pw);
     }
-    if let Ok(pw) = std::env::var(PASSWORD_ENV) {
-        return Ok(Zeroizing::new(pw));
+    match std::env::var(PASSWORD_ENV) {
+        Ok(pw) => return Ok(Zeroizing::new(pw)),
+        // Silently falling back to the prompt would look like the variable was
+        // never set, and the user would type a password the file was not
+        // written with.
+        Err(std::env::VarError::NotUnicode(_)) => return Err(NexcompError::PasswordNotUnicode),
+        Err(std::env::VarError::NotPresent) => {}
     }
     if !io::stdin().is_terminal() {
         return Err(NexcompError::NoPassword);
@@ -195,7 +227,7 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
                 None => compressed,
             };
 
-            fs::write(&output, &final_data)?;
+            write_atomically(&output, &final_data)?;
 
             let ratio = if input_data.is_empty() {
                 0.0

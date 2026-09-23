@@ -372,6 +372,28 @@ fn fix_code_lengths(lengths: &mut [u8], nonzero: &[usize], max_bits: u8) {
     }
 }
 
+/// Whether a set of code lengths can be a prefix code at all: Kraft's
+/// inequality. An over-subscribed set still builds a table, but its codes
+/// overlap, so a corrupt block decodes into nonsense at full speed — a 1 MiB
+/// block of it burned most of a minute before the length check caught it.
+pub fn lengths_are_prefix_free(lengths: &[u8]) -> bool {
+    const MAX_LEN: u32 = 15;
+    let mut weight = 0u64;
+    for &len in lengths {
+        if len == 0 {
+            continue;
+        }
+        if u32::from(len) > MAX_LEN {
+            return false;
+        }
+        weight += 1u64 << (MAX_LEN - u32::from(len));
+        if weight > 1u64 << MAX_LEN {
+            return false;
+        }
+    }
+    true
+}
+
 /// Generate canonical Huffman codes from code lengths.
 pub fn canonical_codes(lengths: &[u8], max_symbols: usize) -> Vec<HuffCode> {
     let n = lengths.len();
@@ -883,6 +905,14 @@ pub fn huffman_decode_blocked_checked(data: &[u8]) -> Option<Vec<Token>> {
         // Code lengths: 286 litlen then 48 dist, 4 bits each
         let litlen_lengths: Vec<u8> = (0..LITLEN_SYMBOLS).map(|_| reader.read_bits(4) as u8).collect();
         let dist_lengths: Vec<u8> = (0..DIST_SYMBOLS).map(|_| reader.read_bits(4) as u8).collect();
+        if !lengths_are_prefix_free(&litlen_lengths) || !lengths_are_prefix_free(&dist_lengths) {
+            return None;
+        }
+        // A block that codes no token cannot be what the writer produced, and
+        // a file full of them is only a way to spend the decoder's time.
+        if block_n_tokens == 0 {
+            return None;
+        }
 
         // Rebuild codes and decode tables
         let litlen_codes = canonical_codes(&litlen_lengths, LITLEN_SYMBOLS);
@@ -2261,6 +2291,33 @@ mod context1_tests {
                 panic!("context1 corpus mismatch at {i}: orig={o:?}, dec={d:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod kraft_tests {
+    use super::*;
+
+    #[test]
+    fn over_subscribed_lengths_are_refused() {
+        assert!(lengths_are_prefix_free(&[1, 1]));
+        assert!(lengths_are_prefix_free(&[1, 2, 3, 3]));
+        assert!(lengths_are_prefix_free(&[0, 0, 0]), "no symbols is not over-subscribed");
+        assert!(!lengths_are_prefix_free(&[1, 1, 1]));
+        assert!(!lengths_are_prefix_free(&vec![1u8; LITLEN_SYMBOLS]));
+    }
+
+    /// The whole point: a block whose tables cannot be a prefix code is
+    /// rejected before it is decoded, not after a minute of nonsense.
+    #[test]
+    fn a_block_with_impossible_tables_decodes_to_nothing() {
+        let mut payload = 1u32.to_le_bytes().to_vec(); // total tokens
+        payload.extend_from_slice(&1u32.to_le_bytes()); // one inner block
+        payload.extend_from_slice(&1u32.to_le_bytes()); // its token count
+        let block = vec![0x11u8; 256]; // every code length is 1
+        payload.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&block);
+        assert!(huffman_decode_blocked_checked(&payload).is_none());
     }
 }
 
