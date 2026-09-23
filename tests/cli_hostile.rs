@@ -142,3 +142,32 @@ fn version_and_inspect_report_the_real_version_and_format() {
     let out = Command::new(env!("CARGO_BIN_EXE_nexcomp")).args(["inspect", packed.to_str().unwrap()]).output().unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("format=NX14 size=17 "), "{out:?}");
 }
+
+/// A zero-byte file is not an archive. Treating one as an empty original made
+/// a `.nxc` truncated by a failed copy look like a successful restore.
+#[test]
+fn a_zero_byte_archive_is_refused() {
+    let empty = scratch("zero.nxc");
+    std::fs::write(&empty, b"").unwrap();
+    let out = scratch("zero.out");
+    let _ = std::fs::remove_file(&out);
+    let (code, stderr) = run(&["decompress", empty.to_str().unwrap(), out.to_str().unwrap()]);
+    assert_ne!(code, 0, "a zero-byte archive must fail: {stderr}");
+    assert!(!out.exists(), "nothing may be written for a refused archive");
+}
+
+/// Compressing nothing still writes a container, so the empty file round-trips
+/// through the same format as everything else.
+#[test]
+fn empty_input_round_trips_through_a_container() {
+    let src = scratch("empty.bin");
+    std::fs::write(&src, b"").unwrap();
+    let archive = scratch("empty.nxc");
+    let out = scratch("empty.out");
+    let (code, stderr) = run(&["compress", src.to_str().unwrap(), archive.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(std::fs::metadata(&archive).unwrap().len() > 0, "an archive always has its magic");
+    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read(&out).unwrap(), b"");
+}

@@ -454,6 +454,7 @@ pub fn codec_summary(compressed: &[u8]) -> Result<String, AdaptiveError> {
         }
     }
     Ok(match names.as_slice() {
+        [] => "none".to_string(),
         [single] => single.to_string(),
         _ => format!("Mixed({})", names.join("+")),
     })

@@ -85,10 +85,9 @@ enum Commands {
 // ---------------------------------------------------------------------------
 
 fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
-    if data.is_empty() {
-        return Vec::new();
-    }
-
+    // An empty input still gets a container: a zero-byte file is not a format,
+    // and writing one would make a truncated archive indistinguishable from an
+    // empty original.
     // Use the adaptive selector (output already includes "NX13" magic header)
     let compressed = adaptive::adaptive_compress(data);
 
@@ -110,10 +109,6 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
 /// Decode `data` straight to `path`, so a file that expands to more than fits
 /// in memory is written block by block instead of being assembled first.
 fn decompress_to_file(data: &[u8], path: &str) -> Result<usize, NexcompError> {
-    if data.is_empty() {
-        fs::write(path, [])?;
-        return Ok(0);
-    }
     if adaptive::container_format(data).is_none() {
         return Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
     }
