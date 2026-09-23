@@ -27,7 +27,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - run: cargo clippy --release --all-targets
+      - run: cargo clippy --release --all-targets -- -D warnings
       # The fixtures in tests/formats were written on x86_64: decoding them
       # here is the cross-architecture check, and the writer test also shows
       # whether this machine produces the same bytes.
