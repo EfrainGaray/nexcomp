@@ -4,7 +4,9 @@
 //! `tests/formats/MANIFEST` lists every fixture with the length and BLAKE3 of
 //! its original. Directories the current writer no longer produces (a codec
 //! that got better makes smaller files) keep their bytes: `nx14-pre-reparse`
-//! is what 1.6.0 wrote before the LZMA re-parse iterated. The fixtures are frozen: regenerating them needs
+//! is what 1.6.0 wrote before the LZMA re-parse iterated, and
+//! `nx14-pre-pinned-table` is a delta block whose rANS table predates the
+//! pinned tie order. The fixtures are frozen: regenerating them needs
 //! `NEXCOMP_REGENERATE_FIXTURES=1`, and a fixture whose bytes change is a
 //! compatibility break, not a test to update.
 //!
@@ -157,6 +159,7 @@ fn decode_fixture(file: &[u8]) -> Vec<u8> {
 fn fixtures_decode_to_their_recorded_bytes() {
     let manifest = std::fs::read_to_string(formats_dir().join("MANIFEST")).expect("MANIFEST exists");
     let mut checked = 0;
+    let mut listed: Vec<String> = Vec::new();
     for line in manifest.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         let mut fields = line.split_whitespace();
         let (path, len, hash) = (
@@ -169,8 +172,33 @@ fn fixtures_decode_to_their_recorded_bytes() {
         assert_eq!(decoded.len(), len, "{path}: length");
         assert_eq!(blake3::hash(&decoded).to_hex().as_str(), hash, "{path}: contents");
         checked += 1;
+        listed.push(path.to_string());
     }
-    assert!(checked >= 35, "only {checked} fixtures checked");
+    // A fixture that falls out of the MANIFEST stops being checked without
+    // anything failing, which is how the NX13 set went unread for a while.
+    let mut on_disk = fixture_files();
+    on_disk.sort();
+    listed.sort();
+    assert_eq!(listed, on_disk, "the MANIFEST and tests/formats have drifted apart");
+    assert_eq!(checked, on_disk.len());
+}
+
+/// Every `.nxc` under `tests/formats`, as a path relative to that directory.
+fn fixture_files() -> Vec<String> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().is_some_and(|e| e == "nxc") {
+                out.push(path.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let root = formats_dir();
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out
 }
 
 /// The writer still produces the committed bytes; on another architecture this
@@ -205,20 +233,20 @@ fn write_format_fixtures() {
         }
         manifest.push_str(&format!("{path} {} {}\n", original.len(), blake3::hash(&original).to_hex()));
     }
-    let manifest_path = formats_dir().join("MANIFEST");
-    let merged = match std::fs::read_to_string(&manifest_path) {
-        // Keep the lines of fixtures this build does not write, frozen sets
-        // included; regenerating replaces only the files it rewrites.
-        Ok(old) => {
-            let fresh: Vec<&str> = manifest.lines().collect();
-            let kept: Vec<&str> = old
-                .lines()
-                .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-                .filter(|l| !fresh.iter().any(|f| f.split_whitespace().next() == l.split_whitespace().next()))
-                .collect();
-            format!("{}{}\n", manifest, kept.join("\n"))
-        }
-        _ => manifest,
-    };
-    std::fs::write(manifest_path, merged).unwrap();
+    // Every other fixture on disk — the frozen sets — gets its line from the
+    // file itself, so the MANIFEST cannot quietly lose one.
+    let written: Vec<String> = manifest
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect();
+    let mut frozen: Vec<String> = fixture_files().into_iter().filter(|p| !written.contains(p)).collect();
+    frozen.sort();
+    for path in frozen {
+        let file = std::fs::read(formats_dir().join(&path)).unwrap();
+        let original = decode_fixture(&file);
+        manifest.push_str(&format!("{path} {} {}\n", original.len(), blake3::hash(&original).to_hex()));
+        println!("frozen  {path}");
+    }
+    std::fs::write(formats_dir().join("MANIFEST"), manifest).unwrap();
 }

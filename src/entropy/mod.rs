@@ -106,9 +106,27 @@ pub fn build_decode_table(table: &RansTable) -> RansDecodeTable {
 /// Algorithm: proportional scaling with floor, then distribute remainder
 /// to largest-frequency symbols to minimize distortion.
 ///
+/// Both orderings break ties by symbol index, so the table is a function of
+/// the counts alone. Sorting only by the fractional part would leave tied
+/// symbols in whatever order the standard library's unstable sort happens to
+/// produce, which differs between compiler versions — and a decoder that
+/// rebuilds this table from the stored counts would then disagree with the
+/// encoder that wrote them. See [`normalize_freqs_unpinned`] for the old
+/// derivation, which stays only to read what earlier releases wrote.
+///
 /// Guarantees: every symbol with count > 0 gets freq >= 1.
 /// Complexity: O(n log n) due to sorting for remainder distribution.
 pub fn normalize_freqs(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
+    normalize_with(counts, alphabet_size, true)
+}
+
+/// The derivation before the tie order was pinned: only for payloads an
+/// earlier release wrote. Its result depends on the standard library's sort.
+pub fn normalize_freqs_unpinned(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
+    normalize_with(counts, alphabet_size, false)
+}
+
+fn normalize_with(counts: &[u64], alphabet_size: usize, pinned: bool) -> Vec<u32> {
     let total_count: u64 = counts.iter().sum();
     if total_count == 0 {
         // Uniform distribution fallback
@@ -145,7 +163,11 @@ pub fn normalize_freqs(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by_key(|&(count, _)| Reverse(count));
+        if pinned {
+            fractional.sort_unstable_by_key(|&(frac, idx)| (Reverse(frac), idx));
+        } else {
+            fractional.sort_unstable_by_key(|&(frac, _)| Reverse(frac));
+        }
         for &(_, idx) in &fractional {
             if remainder == 0 {
                 break;
@@ -163,7 +185,11 @@ pub fn normalize_freqs(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by_key(|a| a.0);
+        if pinned {
+            fractional.sort_unstable_by_key(|&(frac, idx)| (frac, idx));
+        } else {
+            fractional.sort_unstable_by_key(|a| a.0);
+        }
         // May need multiple passes when single-pass can't reclaim enough
         while excess > 0 {
             let mut made_progress = false;
@@ -419,6 +445,29 @@ mod tests {
         // All nonzero counts must have freq >= 1
         for i in 0..4 {
             assert!(freqs[i] >= 1, "Symbol {i} with count>0 must have freq>=1");
+        }
+    }
+
+    /// The canary for the pinned tie order: 250 symbols share a fractional
+    /// part and only 160 of them can take a unit of the remainder, so the
+    /// table says which order the remainder was handed out in. A standard
+    /// library whose unstable sort orders ties differently would show up here
+    /// rather than in a file that no longer decodes.
+    #[test]
+    fn normalize_freqs_breaks_ties_by_symbol() {
+        let mut counts = vec![1u64; 256];
+        for count in counts.iter_mut().skip(250) {
+            *count = 2;
+        }
+        let freqs = normalize_freqs(&counts, 256);
+        assert_eq!(freqs.iter().sum::<u32>(), TOTAL);
+        for (i, &f) in freqs.iter().enumerate() {
+            let expected = match i {
+                0..=159 => 16,
+                160..=249 => 15,
+                _ => 31,
+            };
+            assert_eq!(f, expected, "symbol {i}");
         }
     }
 }
