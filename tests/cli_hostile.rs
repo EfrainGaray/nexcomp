@@ -171,3 +171,68 @@ fn empty_input_round_trips_through_a_container() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(std::fs::read(&out).unwrap(), b"");
 }
+
+/// 1.7.0 and earlier sealed an empty input as an empty payload rather than as
+/// a container. The wrapper's tag vouches for that emptiness, so those files
+/// have to keep restoring.
+#[test]
+fn an_empty_file_sealed_by_an_earlier_release_still_opens() {
+    let sealed = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/compat/empty-sealed-by-1.7.0.nxe3");
+    let out = scratch("sealed-empty.out");
+    let _ = std::fs::remove_file(&out);
+    let run_with_password = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_nexcomp"))
+            .args(args)
+            .env("NEXCOMP_PASSWORD", "nexcomp-fixture")
+            .output()
+            .unwrap();
+        (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let (code, stderr) = run_with_password(&["decompress", sealed, out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read(&out).unwrap(), b"");
+    let (code, stderr) = run_with_password(&["inspect", sealed]);
+    assert_eq!(code, 0, "{stderr}");
+}
+
+/// The output is staged under a temporary name, which must not follow a
+/// symlink someone planted, must not destroy the destination when the decode
+/// fails, and must not turn a device into a regular file.
+#[test]
+fn staging_the_output_does_not_follow_symlinks_or_break_devices() {
+    let dir = scratch("staging");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.bin");
+    std::fs::write(&source, vec![7u8; 40_000]).unwrap();
+    let archive = dir.join("source.nxc");
+    let (code, stderr) = run(&["compress", source.to_str().unwrap(), archive.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+
+    // A device is written through, not renamed onto.
+    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), "/dev/null"]);
+    assert_eq!(code, 0, "writing to /dev/null: {stderr}");
+
+    // A planted temporary must not be followed to somewhere else.
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, b"victim").unwrap();
+    let dest = dir.join("dest.bin");
+    for attempt in 0..4 {
+        let planted = dir.join(format!("dest.bin.part{}-{attempt}", std::process::id()));
+        let _ = std::os::unix::fs::symlink(&victim, &planted);
+    }
+    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), dest.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read(&victim).unwrap(), b"victim", "the symlink target was written through");
+    assert_eq!(std::fs::read(&dest).unwrap().len(), 40_000);
+
+    // A failed decode leaves the destination as it was.
+    let truncated = dir.join("truncated.nxc");
+    let whole = std::fs::read(&archive).unwrap();
+    std::fs::write(&truncated, &whole[..whole.len() / 2]).unwrap();
+    let precious = dir.join("precious.txt");
+    std::fs::write(&precious, b"precious").unwrap();
+    let (code, _) = run(&["decompress", truncated.to_str().unwrap(), precious.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    assert_eq!(std::fs::read(&precious).unwrap(), b"precious");
+}

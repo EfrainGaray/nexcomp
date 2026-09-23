@@ -50,7 +50,8 @@ warning, so existing scripts keep running while they migrate.
 by a known-answer test, so upgrading the `argon2` crate can no longer change the
 key of an existing file. New files use the NXE3 wrapper, which stores the KDF id
 and the m/t/p costs in its authenticated header and uses 64 MiB, 3 passes.
-Costs above 1 GiB, 16 passes or 16 lanes are refused before any derivation, so a
+Costs above 256 MiB, 8 passes or 4 lanes are refused before any derivation
+(1 GiB / 16 / 16 when this was written; lowered in 1.8.0), so a
 hostile header cannot demand unbounded memory. Salt and nonce come from `OsRng`
 (now the fallible API of rand 0.9, `14d395c`), and derived keys are zeroized.
 

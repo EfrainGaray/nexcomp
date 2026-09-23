@@ -4,9 +4,8 @@
 //! `tests/formats/MANIFEST` lists every fixture with the length and BLAKE3 of
 //! its original. Directories the current writer no longer produces (a codec
 //! that got better makes smaller files) keep their bytes: `nx14-pre-reparse`
-//! is what 1.6.0 wrote before the LZMA re-parse iterated, and
-//! `nx14-pre-pinned-table` is a delta block whose rANS table predates the
-//! pinned tie order. The fixtures are frozen: regenerating them needs
+//! is what 1.6.0 wrote before the LZMA re-parse iterated, and `nx14` is what
+//! 1.6.0 and 1.7.0 wrote, delta blocks without the pinned-table flag included. The fixtures are frozen: regenerating them needs
 //! `NEXCOMP_REGENERATE_FIXTURES=1`, and a fixture whose bytes change is a
 //! compatibility break, not a test to update.
 //!

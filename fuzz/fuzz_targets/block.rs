@@ -9,6 +9,6 @@ use nexcomp::adaptive::{decompress_block_adaptive, CodecId};
 fuzz_target!(|data: &[u8]| {
     let [id, a, b, c, d, payload @ ..] = data else { return };
     let Some(codec) = CodecId::from_u8(id % 8) else { return };
-    let block_len = u32::from_le_bytes([*a, *b, *c, *d]) as usize % (4 << 20);
+    let block_len = u32::from_le_bytes([*a, *b, *c, *d]) as usize % ((4 << 20) + 1);
     let _ = decompress_block_adaptive(codec, payload, block_len);
 });

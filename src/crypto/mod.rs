@@ -14,7 +14,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use rand::{rngs::OsRng, TryRngCore};
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -82,9 +82,16 @@ fn derive_key(password: &[u8], salt: &[u8; 32], kdf: KdfParams) -> Result<Zeroiz
     let params = Params::new(kdf.m_cost_kib, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|_| CryptoError::KdfParamsOutOfRange)?;
     let mut okm = Zeroizing::new([0u8; 32]);
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(password, salt, okm.as_mut())
-        .map_err(|_| CryptoError::KdfError)?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    // argon2's own zeroize feature wipes its initial hash and block hash but
+    // not the memory it filled, which is the whole password-derived state, so
+    // the blocks are ours to allocate and to wipe.
+    let mut blocks = Zeroizing::new(vec![Block::new(); argon2.params().block_count()]);
+    let derived = argon2
+        .hash_password_into_with_memory(password, salt, okm.as_mut(), blocks.as_mut_slice())
+        .map_err(|_| CryptoError::KdfError);
+    drop(blocks);
+    derived?;
     Ok(okm)
 }
 

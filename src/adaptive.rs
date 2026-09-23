@@ -575,8 +575,10 @@ pub fn try_adaptive_decompress_limited(payload: &[u8], max_output: usize) -> Res
     Ok(out)
 }
 
-/// How much output to reserve up front, whatever the container declares.
-const INITIAL_CAPACITY: usize = 64 * 1024 * 1024;
+/// How much output to reserve up front, whatever the container declares: four
+/// blocks, well under what the hostile-input tests allow, and the buffer grows
+/// from there as blocks decode.
+const INITIAL_CAPACITY: usize = 4 * BLOCK_SIZE;
 
 /// Panicking convenience wrapper over `try_adaptive_decompress`.
 pub fn adaptive_decompress(payload: &[u8]) -> Vec<u8> {

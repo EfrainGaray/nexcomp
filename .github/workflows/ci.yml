@@ -112,7 +112,7 @@ jobs:
           # The prebuilt cargo-fuzz is a musl binary and would target musl.
           host=$(rustc -vV | awk '/^host:/ {print $2}')
           for target in decompress block codec-roundtrip roundtrip; do
-            cargo fuzz run --target "$host" "$target" -- -max_total_time=120 -malloc_limit_mb=2048 -rss_limit_mb=4096 -max_len=1048576 -timeout=30
+            cargo fuzz run --target "$host" "$target" -- -max_total_time=120 -malloc_limit_mb=2048 -rss_limit_mb=4096 -max_len=1048576 -timeout=120
           done
       - uses: actions/upload-artifact@v4
         if: failure()

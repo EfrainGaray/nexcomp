@@ -108,19 +108,46 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     compressed
 }
 
-/// Where the output is built before it takes its final name, so an interrupted
-/// run cannot leave a partial file looking like the real one, and a failure
-/// leaves whatever was already at `path` untouched.
-fn partial_path(path: &str) -> String {
-    format!("{path}.part{}", std::process::id())
+/// Whether `path` is somewhere a temporary file can stand in for: a plain file
+/// that does not exist yet, or one that does. A device, a fifo or `/dev/null`
+/// is written straight through, because renaming onto it would replace it.
+fn can_stage(path: &str) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => meta.is_file(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
 }
 
-/// Write `bytes` to `path` through a temporary file in the same directory.
+/// A file next to `path` that does not exist yet, opened by this process
+/// alone: `create_new` fails rather than following a symlink someone planted
+/// or reusing a stale temporary. Returns the file and the name to rename from.
+fn staged_file(path: &str) -> io::Result<(fs::File, String)> {
+    let pid = std::process::id();
+    for attempt in 0..64u32 {
+        let candidate = format!("{path}.part{pid}-{attempt}");
+        match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => return Ok((file, candidate)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free temporary name next to the output"))
+}
+
+/// Write `bytes` to `path`, through a temporary file in the same directory
+/// when `path` is a plain file, so a failure leaves what was there untouched.
 fn write_atomically(path: &str, bytes: &[u8]) -> io::Result<()> {
-    let partial = partial_path(path);
-    fs::write(&partial, bytes).inspect_err(|_| {
+    if !can_stage(path) {
+        return fs::write(path, bytes);
+    }
+    let (mut file, partial) = staged_file(path)?;
+    let written = io::Write::write_all(&mut file, bytes).and_then(|()| io::Write::flush(&mut file));
+    drop(file);
+    if let Err(e) = written {
         let _ = fs::remove_file(&partial);
-    })?;
+        return Err(e);
+    }
     fs::rename(&partial, path).inspect_err(|_| {
         let _ = fs::remove_file(&partial);
     })
@@ -132,22 +159,30 @@ fn decompress_to_file(data: &[u8], path: &str) -> Result<usize, NexcompError> {
     if adaptive::container_format(data).is_none() {
         return Err(pre_release(data).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
     }
-    let partial = partial_path(path);
-    let mut out = io::BufWriter::new(fs::File::create(&partial)?);
+    // A device or a fifo cannot be renamed onto, so it is written straight
+    // through, as every release before 1.8.0 did for every destination.
+    let staged = can_stage(path).then(|| staged_file(path)).transpose()?;
+    let (file, partial) = match staged {
+        Some((file, partial)) => (file, Some(partial)),
+        None => (fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?, None),
+    };
+    let mut out = io::BufWriter::new(file);
     let written = adaptive::decompress_to(data, &mut out).and_then(|n| {
         out.flush().map_err(|e| adaptive::AdaptiveError::Io(e.to_string()))?;
         Ok(n)
     });
     drop(out);
-    if written.is_err() {
+    match (&written, &partial) {
         // Never leave a half-written or unverified file behind, and never
         // destroy what was already at the destination.
-        let _ = fs::remove_file(&partial);
-        return Ok(written?);
+        (Err(_), Some(partial)) => {
+            let _ = fs::remove_file(partial);
+        }
+        (Ok(_), Some(partial)) => fs::rename(partial, path).inspect_err(|_| {
+            let _ = fs::remove_file(partial);
+        })?,
+        _ => {}
     }
-    fs::rename(&partial, path).inspect_err(|_| {
-        let _ = fs::remove_file(&partial);
-    })?;
     Ok(written?)
 }
 
@@ -190,12 +225,29 @@ fn password(argv: Option<String>, file: Option<&str>, confirm: bool) -> Result<Z
 }
 
 /// Strip the encryption wrapper (NXE2 or NXE3) if the file has one.
-fn open_payload(file_data: Vec<u8>, argv: Option<String>, password_file: Option<&str>) -> Result<Vec<u8>, NexcompError> {
+fn open_payload(file_data: Vec<u8>, argv: Option<String>, password_file: Option<&str>) -> Result<Payload, NexcompError> {
     if !crypto::is_sealed(&file_data) {
-        return Ok(file_data);
+        return Ok(Payload { sealed: false, bytes: file_data });
     }
     let pw = password(argv, password_file, false)?;
-    Ok(crypto::open(&file_data, pw.as_bytes())?)
+    Ok(Payload { sealed: true, bytes: crypto::open(&file_data, pw.as_bytes())? })
+}
+
+/// What a file holds once any encryption is off it, and whether the wrapper's
+/// tag vouched for it. Releases up to 1.7.0 sealed an empty input as an empty
+/// payload instead of a container, and those files still have to open.
+struct Payload {
+    sealed: bool,
+    bytes: Vec<u8>,
+}
+
+impl Payload {
+    /// An empty payload out of a wrapper is the empty file an older release
+    /// sealed: the AEAD tag says so. An empty plain file is just a file that
+    /// is not an archive.
+    fn is_sealed_empty(&self) -> bool {
+        self.sealed && self.bytes.is_empty()
+    }
 }
 
 fn main() {
@@ -254,7 +306,12 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
 
             let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
-            let restored = decompress_to_file(&payload, &output)?;
+            let restored = if payload.is_sealed_empty() {
+                write_atomically(&output, b"")?;
+                0
+            } else {
+                decompress_to_file(&payload.bytes, &output)?
+            };
             eprintln!("Done: {restored} bytes restored.");
         }
         Commands::Inspect {
@@ -267,6 +324,11 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
 
             let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
+            if payload.is_sealed_empty() {
+                println!("format=NXE3 size=0 codec=none");
+                return Ok(());
+            }
+            let payload = payload.bytes;
             let Some(format) = adaptive::container_format(&payload) else {
                 return Err(pre_release(&payload).map_or(NexcompError::UnknownFormat, NexcompError::PreRelease));
             };

@@ -118,9 +118,12 @@ then, for both:
 
 The header is the AEAD associated data, so the declared costs and length are
 authenticated. Files are compressed first and encrypted afterwards. New files
-use m = 64 MiB, t = 3, p = 1; costs above 1 GiB, 16 passes or 16 lanes are
+use m = 64 MiB, t = 3, p = 1; costs above 256 MiB, 8 passes or 4 lanes are
 refused before any key derivation, so a hostile header cannot demand unbounded
-memory.
+memory. 1.7.0 and earlier accepted up to 1 GiB, 16 passes and 16 lanes; no
+release ever wrote above the default, so the lower ceiling refuses nothing this
+project produced, but a file sealed by another writer at those costs is refused
+by 1.8.0 and later.
 
 ## Pre-release formats
 

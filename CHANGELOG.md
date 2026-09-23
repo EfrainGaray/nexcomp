@@ -30,6 +30,25 @@ called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
   4 MiB PPM blocks peaked at 5.3 GB on twelve threads and now peak at 1.5 GB,
   which is what one PPM block costs.
 
+### Hardening
+
+- The output is built under a temporary name and renamed on success, so a
+  failed run neither destroys what was at the destination nor leaves a partial
+  file under the final name. A destination that is not a plain file — a device,
+  a fifo, `/dev/null` — is still written straight through, and the temporary is
+  created with `create_new`, so a planted symlink or a stale temporary cannot
+  be followed.
+- `MAX_KDF` drops from 1 GiB / 16 passes / 16 lanes to 256 MiB / 8 / 4: a
+  forged NXE3 header bought a minute of work before the tag failed. Nothing
+  this project writes goes above the 64 MiB default.
+- Huffman code lengths are checked against Kraft's inequality, and an inner
+  block that codes no token is refused.
+- `NEXCOMP_PASSWORD` that is not valid UTF-8 is an error instead of being read
+  as absent, and a file too large for a 32-bit build says so rather than
+  claiming to be truncated.
+- An empty file sealed by 1.7.0 or earlier — a wrapper around an empty payload
+  rather than around a container — still restores.
+
 ### Fixtures, fuzzing and docs
 
 - The MANIFEST is complete by construction and the suite asserts it matches the
