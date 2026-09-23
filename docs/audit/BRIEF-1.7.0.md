@@ -26,7 +26,7 @@ recorded once the restored bytes hashed to the original.
 | enwik8 | 100,000,000 | 24,485,454 | 1.9588 | 24,831,648 | 29,008,758 |
 
 Measured by `scripts/benchmark.sh`; the artifact with the environment, the
-per-file table and the tool versions is [`bench/results/20260923T020706Z-darwin-x86_64.md`](../../bench/results/20260923T020706Z-darwin-x86_64.md).
+per-file table and the tool versions is [`bench/results/20260923T181910Z-darwin-x86_64.md`](../../bench/results/20260923T181910Z-darwin-x86_64.md).
 
 Against the published leaderboard (Matt Mahoney's Silesia table, not measured
 here): NEXCOMP sits below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009),

@@ -21,8 +21,8 @@ and decompressed on its own, and only recorded once the restored bytes hashed to
 | silesia | 211938580 | 45456856 | 1.7159 | 48456004 | 54506769 |
 | enwik8 | 100000000 | 24485454 | 1.9588 | 24831648 | 29008758 |
 
-Measured by `scripts/benchmark.sh` on the 1.7.0 build; environment, tool versions and per-file
-numbers in [`bench/results/20260923T020706Z-darwin-x86_64.md`](bench/results/20260923T020706Z-darwin-x86_64.md).
+Measured by `scripts/benchmark.sh` on the 1.8.0 build; environment, tool versions and per-file
+numbers in [`bench/results/20260923T181910Z-darwin-x86_64.md`](bench/results/20260923T181910Z-darwin-x86_64.md).
 
 NEXCOMP is ahead of the general-purpose tools and behind the context-mixing leaders. On Silesia its
 45,456,856 bytes sit below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009), above tangelo 2.3
