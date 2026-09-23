@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 // NEXCOMP — Separación P|I por paridad geométrica ("técnica ajedrez")
 //
 // Dado un stream de bytes en posición i dentro de un bloque de ancho W:
@@ -148,7 +149,7 @@ pub fn build_freq_table_from_counts(counts: &[u64; 256]) -> [u32; 256] {
         // Distribute remainder to highest-count symbols
         let mut remaining = TOTAL.saturating_sub(assigned);
         let mut sorted: Vec<(u64, usize)> = (0..256).filter(|&i| counts[i] > 0).map(|i| (counts[i], i)).collect();
-        sorted.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        sorted.sort_unstable_by_key(|&(count, _)| Reverse(count));
         for &(_, idx) in &sorted {
             if remaining == 0 { break; }
             freqs[idx] += 1;
@@ -187,7 +188,7 @@ pub fn build_freq_table_from_counts(counts: &[u64; 256]) -> [u32; 256] {
 
         // Distribute remainder from fractional parts
         let mut leftover = remaining_quanta - extra_assigned;
-        fractionals.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        fractionals.sort_unstable_by_key(|&(count, _)| Reverse(count));
         for &(_, idx) in &fractionals {
             if leftover == 0 { break; }
             freqs[idx] += 1;
@@ -251,7 +252,7 @@ pub fn build_freq_table(data: &[u8]) -> [u32; 256] {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        fractional.sort_unstable_by_key(|&(count, _)| Reverse(count));
         for &(_, idx) in &fractional {
             if remainder == 0 {
                 break;
@@ -268,7 +269,7 @@ pub fn build_freq_table(data: &[u8]) -> [u32; 256] {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        fractional.sort_unstable_by_key(|a| a.0);
         for &(_, idx) in &fractional {
             if excess == 0 {
                 break;

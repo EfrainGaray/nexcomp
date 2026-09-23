@@ -196,17 +196,17 @@ impl<'a> RangeDecoder<'a> {
     /// Decode one bit with adaptive probability.
     pub fn decode_bit(&mut self, prob: &mut Prob) -> u32 {
         let bound = (self.range >> PROB_BITS) * (*prob as u32);
-        let bit;
-        if self.code < bound {
+        
+        let bit = if self.code < bound {
             self.range = bound;
             *prob += ((1u16 << PROB_BITS) - *prob) >> 5;
-            bit = 0;
+            0
         } else {
             self.code -= bound;
             self.range -= bound;
             *prob -= *prob >> 5;
-            bit = 1;
-        }
+            1
+        };
         if self.range < TOP_VALUE {
             self.range <<= 8;
             self.code = (self.code << 8) | self.next_byte() as u32;

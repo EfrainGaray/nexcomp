@@ -108,7 +108,7 @@ impl ByteHistogram {
 
     /// Fraction of bytes that are DNA bases: A, C, G, T, N (upper + lower)
     fn dna_ratio(&self) -> f64 {
-        let dna: u32 = [b'A', b'C', b'G', b'T', b'N', b'a', b'c', b'g', b't', b'n']
+        let dna: u32 = b"ACGTNacgtn"
             .iter()
             .map(|&b| self.counts[b as usize])
             .sum();

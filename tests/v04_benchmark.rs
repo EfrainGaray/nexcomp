@@ -447,16 +447,16 @@ fn test_full_benchmark() {
     eprintln!("{}", "-".repeat(75));
 
     // Best of all
-    let best_name;
-    let best_size;
-    let best_bpb;
-    if a.len() <= b.len() && a.len() <= c.len() {
-        best_name = "v0.4-A"; best_size = a.len(); best_bpb = a_bpb;
+    
+    
+    
+    let (best_name, best_size, best_bpb) = if a.len() <= b.len() && a.len() <= c.len() {
+        ("v0.4-A", a.len(), a_bpb)
     } else if b.len() <= c.len() {
-        best_name = "v0.4-B"; best_size = b.len(); best_bpb = b_bpb;
+        ("v0.4-B", b.len(), b_bpb)
     } else {
-        best_name = "v0.4-C"; best_size = c.len(); best_bpb = c_bpb;
-    }
+        ("v0.4-C", c.len(), c_bpb)
+    };
     eprintln!("BEST: {} {:>10} bytes  {:.3} bpb", best_name, best_size, best_bpb);
     let beat_gzip = best_bpb < 1.524;
     eprintln!("Beat gzip -9 (1.524 bpb)? {}", if beat_gzip { "YES" } else { "NO" });

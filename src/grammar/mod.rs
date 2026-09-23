@@ -195,11 +195,9 @@ pub fn repair_encode(input: &[u8]) -> Result<RepairResult, RepairError> {
         // --- Stall detection (every stall_window rules) ---
         let cur_seq_len = dst_len;
         if rules.len() % stall_window == 0 && rules.len() > stall_window {
-            let shrink_pct = if prev_seq_len > 0 {
-                100 * (prev_seq_len.saturating_sub(cur_seq_len)) / prev_seq_len
-            } else {
-                0
-            };
+            let shrink_pct = (100 * prev_seq_len.saturating_sub(cur_seq_len))
+                .checked_div(prev_seq_len)
+                .unwrap_or(0);
             if shrink_pct < 1 {
                 stall_count += 1;
                 if stall_count >= 2 {

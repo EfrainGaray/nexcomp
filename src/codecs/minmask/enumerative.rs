@@ -205,8 +205,7 @@ fn rank_incremental(ones: &[u32]) -> Big {
     let mut rank = Big::zero();
     let mut v = Big::zero(); // C(a, i)
     let mut a = 0u64;
-    let mut i = 1u64;
-    for &p in ones {
+    for (i, &p) in (1u64..).zip(ones.iter()) {
         let p = u64::from(p);
         while a < p {
             a += 1;
@@ -225,7 +224,6 @@ fn rank_incremental(ones: &[u32]) -> Big {
         } else {
             v = Big::zero();
         }
-        i += 1;
     }
     rank
 }

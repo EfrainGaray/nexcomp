@@ -5,6 +5,7 @@
 // Key property: |encoded| ≤ H(X) + ε, with ε → 0 as message length → ∞
 // Decode throughput target: >2 GB/s single-thread (Ryzen 7 5800X)
 
+use std::cmp::Reverse;
 use thiserror::Error;
 
 /// Scale bits for frequency table. M = 2^SCALE_BITS = 4096.
@@ -144,7 +145,7 @@ pub fn normalize_freqs(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        fractional.sort_unstable_by_key(|&(count, _)| Reverse(count));
         for &(_, idx) in &fractional {
             if remainder == 0 {
                 break;
@@ -162,7 +163,7 @@ pub fn normalize_freqs(counts: &[u64], alphabet_size: usize) -> Vec<u32> {
                 (exact as u64, i)
             })
             .collect();
-        fractional.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        fractional.sort_unstable_by_key(|a| a.0);
         // May need multiple passes when single-pass can't reclaim enough
         while excess > 0 {
             let mut made_progress = false;
