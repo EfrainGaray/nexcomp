@@ -179,3 +179,14 @@ fn test_crypto_roundtrip() {
 
     assert_eq!(data.as_slice(), decrypted.as_slice());
 }
+
+/// A 4 MiB block can hold a run longer than any single RLE length class, and a
+/// sparse file is exactly where that happens. The compressor used to panic
+/// inside rayon and take the process with it.
+#[test]
+fn a_run_longer_than_the_largest_length_class_compresses() {
+    let mut data = vec![0u8; 2_250_593];
+    data.extend_from_slice(&[1u8; 100]);
+    let encoded = nexcomp::adaptive::adaptive_compress(&data);
+    assert_eq!(nexcomp::adaptive::try_adaptive_decompress(&encoded).unwrap(), data);
+}

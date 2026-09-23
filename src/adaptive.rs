@@ -175,9 +175,18 @@ fn select_best_codec(data: &[u8]) -> (Vec<u8>, CodecId) {
     // order, so a tie still keeps the earlier candidate.
     candidates
         .into_par_iter()
-        .filter_map(|codec| encode_with(codec, data).filter(|out| !out.is_empty()).map(|out| (out, codec)))
+        .filter_map(|codec| encode_candidate(codec, data).map(|out| (out, codec)))
         .reduce_with(|best, other| if other.0.len() < best.0.len() { other } else { best })
-        .expect("baseline always encodes")
+        // Storing the block is always available and always correct, so one
+        // codec that panics on an input costs ratio, never the compression.
+        .unwrap_or_else(|| (data.to_vec(), CodecId::Passthrough))
+}
+
+/// One candidate's output, or `None` if the codec rejects the input, produces
+/// nothing, or panics on it.
+fn encode_candidate(codec: CodecId, data: &[u8]) -> Option<Vec<u8>> {
+    let encode = std::panic::AssertUnwindSafe(|| encode_with(codec, data));
+    std::panic::catch_unwind(encode).ok().flatten().filter(|out| !out.is_empty())
 }
 
 /// Compress a block adaptively with no-regression guarantee.

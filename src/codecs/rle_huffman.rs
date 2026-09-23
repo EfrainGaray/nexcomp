@@ -76,7 +76,10 @@ fn rle_encode(data: &[u8]) -> Vec<Run> {
     while i < data.len() {
         let val = data[i];
         let mut run_len: u32 = 1;
-        while i + (run_len as usize) < data.len() && data[i + (run_len as usize)] == val {
+        while i + (run_len as usize) < data.len()
+            && data[i + (run_len as usize)] == val
+            && (run_len as usize) < MAX_RUN
+        {
             run_len += 1;
         }
         runs.push(Run {
@@ -233,6 +236,10 @@ const LENGTH_GROUPS: &[(u16, u16, u8, u32)] = &[
 ];
 
 const NUM_LENGTH_CLASSES: usize = 256;
+
+/// The longest run a single length class can carry. Anything longer is split
+/// into consecutive runs of the same value, which the decoder concatenates.
+pub(crate) const MAX_RUN: usize = 2_250_592;
 
 /// Encode a run length (minus 1) into (class, extra_bits_value, extra_bits_count).
 fn encode_length_class(len_minus_1: u32) -> (u16, u32, u8) {
@@ -512,6 +519,19 @@ pub fn rle_huffman_decode(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 4 MiB block can hold a run longer than the largest length class, and
+    /// a compressor may not die on it.
+    #[test]
+    fn run_longer_than_the_largest_length_class() {
+        let mut data = vec![0u8; MAX_RUN + 1];
+        data.extend_from_slice(&[1u8; 100]);
+        let runs = rle_encode(&data);
+        assert_eq!(runs[0].length, MAX_RUN as u32);
+        assert_eq!(runs[1], Run { value: 0, length: 1 });
+        let encoded = rle_huffman_encode(&data);
+        assert_eq!(rle_huffman_decode(&encoded), data);
+    }
 
     #[test]
     fn test_rle_encode_decode_roundtrip() {
