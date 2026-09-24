@@ -24,8 +24,14 @@ and decompressed on its own, and only recorded once the restored bytes hashed to
 Measured by `scripts/benchmark.sh` on the 1.8.0 build; environment, tool versions and per-file
 numbers in [`bench/results/20260923T181910Z-darwin-x86_64.md`](bench/results/20260923T181910Z-darwin-x86_64.md).
 
-NEXCOMP is ahead of the general-purpose tools and behind the context-mixing leaders. On Silesia its
-45,456,856 bytes sit below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009), above tangelo 2.3
+NEXCOMP is ahead of the general-purpose tools on these corpora and behind the context-mixing
+leaders. It is not ahead of them everywhere. On 30 MB of Rust source it needs 3,700,863 bytes
+against xz's 3,029,628, brotli's 3,120,436 and zstd -19's 3,378,700: blocks are independent at
+4 MiB, while xz matches across a 64 MiB dictionary, so the repetition a source tree carries
+between files is lost at every boundary. The first 4 MB of that corpus, which is one block, costs
+368,933 against xz's 361,504 — the gap is 2% there and 22% over the whole tree.
+
+On Silesia its 45,456,856 bytes sit below bee -m3 -d8 (45,622,742) and freearc -m9 (45,542,009), above tangelo 2.3
 (44,037,765) and TNSSRC 0.1.0 (43,724,575), with paq8px_v215 -12L at 27,825,511 and
 precomp v0.4.7 -cn | cmix v21 at 28,261,094 another 17.6 MB below. Those figures are from Matt
 Mahoney's published Silesia table, not measured here.

@@ -65,7 +65,8 @@ called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
   decoded since `dc07175`.
 - The fuzz targets reach the sizes the format allows — the container target
   capped output at 64 KiB and the block target took the block length as a u16,
-  so neither had ever seen a multi-block file or a full 4 MiB block.
+  so neither had ever seen a multi-block file or a full 4 MiB block. With that
+  fixed, 24 h per target: 15,256,778 executions, no crash, timeout or OOM.
 - Corrected claims: the Silesia leaderboard figures (TNSSRC 0.1.0 is
   43,724,575 and 28,261,094 is precomp + cmix v21), the MSRV (1.85, not 1.75,
   with the committed lock), the NXE3 length field (u64), the fixture count, and

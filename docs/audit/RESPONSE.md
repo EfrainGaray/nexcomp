@@ -177,7 +177,7 @@ the artifact they were generated from.
 |---|---|
 | A. malformed NX13 never allocates above a configured maximum | met: `tests/hostile_decode.rs`, `tests/mutation_decode.rs`, fuzz targets |
 | B. malformed legacy NXC never allocates above a configured maximum | met by refusing the legacy formats (F-02) |
-| C. 24 h of fuzzing with zero panic, abort or hang | partly: 30 minutes per target with no crash; the 24 h run is not done |
+| C. 24 h of fuzzing with zero panic, abort or hang | met: 24 h per target on the four widened targets, 15,256,778 executions, no crash, timeout or OOM |
 | D. files written on x86 decode on ARM and the other way round | met: CI run 35774376267 decoded each architecture's files on the other, and the fixtures the writer produced on aarch64 were byte-identical to the committed x86_64 ones |
 | E. standard benchmark manifests reproduce byte for byte | met: `bench/manifest.tsv` and the result artifacts |
 
