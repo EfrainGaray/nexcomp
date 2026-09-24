@@ -1,9 +1,10 @@
 # Changelog
 
-## 1.8.0 — 2026-09-23
+## 1.8.0 — 2026-09-24 — first stable release
 
-Everything an independent audit of 1.7.0 asked for before the format could be
-called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
+Everything three audits asked for before the format could be called stable:
+one of 1.7.0, one of the fixes, and one of the fixes to those. Container magic
+`NX15`; `NX14` and `NX13` still decode.
 
 ### Correctness
 

@@ -2,12 +2,15 @@
 
 Adaptive lossless compressor that selects the best codec per block.
 
-1.7.0 is the first release meant to be used as a stable one: the formats are specified and pinned
-by fixtures, the decoder is bounded and fuzzed, and every number below comes from a script that
-records how it ran. A release may stop writing a file format but never stops reading one an
-earlier release wrote ([docs/FORMAT.md](docs/FORMAT.md)); the CLI and the library API can still
-change between versions. It remains a research compressor: it is slow to compress, it has not
-been through an independent audit of this release, and nothing but this project writes NX15.
+**1.8.0 is the first stable release.** The formats are specified and pinned by fixtures on two
+architectures, the decoder is bounded and has 24 h of fuzzing per target behind it, and every
+number below comes from a script that records how it ran. Three audits went through 1.7.0 and
+through the fixes themselves; what they found is in [docs/audit/](docs/audit/). A release may stop
+writing a file format but never stops reading one an earlier release wrote
+([docs/FORMAT.md](docs/FORMAT.md)); the CLI and the library API can still change between versions.
+
+It is still a research compressor in what it is good for: it is slow to compress, slower than xz
+to decompress, and nothing but this project writes NX15.
 
 ## Results
 
