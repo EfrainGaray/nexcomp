@@ -203,7 +203,26 @@ const KDF_ARGON2ID_V13: u8 = 1;
 
 /// Whether `file` starts with an encrypted-file magic.
 pub fn is_sealed(file: &[u8]) -> bool {
-    file.starts_with(NXE2_MAGIC) || file.starts_with(NXE3_MAGIC)
+    wrapper_magic(file).is_some()
+}
+
+/// The wrapper's magic, as a name, if the file has one.
+pub fn wrapper_magic(file: &[u8]) -> Option<&'static str> {
+    if file.starts_with(NXE3_MAGIC) {
+        Some("NXE3")
+    } else if file.starts_with(NXE2_MAGIC) {
+        Some("NXE2")
+    } else {
+        None
+    }
+}
+
+/// The original length the wrapper's authenticated header declares.
+pub fn declared_length(file: &[u8]) -> Option<u64> {
+    match wrapper_magic(file)? {
+        "NXE3" => file.get(17..25).map(|b| u64::from_le_bytes(b.try_into().unwrap())),
+        _ => file.get(4..8).map(|b| u64::from(u32::from_le_bytes(b.try_into().unwrap()))),
+    }
 }
 
 /// Encrypt `payload`, the compressed form of `input_len` bytes, as an NXE3 file.

@@ -489,5 +489,25 @@ mod tests {
             };
             assert_eq!(f, expected, "symbol {i}");
         }
+
+        // The table above is one the unstable sort happens to produce as well,
+        // so it alone would not notice the tie-break being dropped. This one
+        // would: the two derivations disagree on it.
+        let mut state = 0x243f_6a88_85a3_08d3u64;
+        let spread: Vec<u64> = (0..256)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                1 + (state >> 33) % 40
+            })
+            .collect();
+        let pinned = normalize_freqs(&spread, 256);
+        assert_eq!(pinned.iter().sum::<u32>(), TOTAL);
+        assert_ne!(
+            pinned,
+            normalize_freqs_unpinned(&spread, 256),
+            "the pinned derivation is not distinguishable from the unpinned one on this input, \
+             so nothing here would notice the tie-break being dropped"
+        );
+        assert_eq!(&pinned[..16], &[15, 14, 28, 15, 29, 2, 26, 6, 2, 10, 5, 25, 4, 28, 13, 2]);
     }
 }

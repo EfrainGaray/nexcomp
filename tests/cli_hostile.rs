@@ -213,18 +213,25 @@ fn staging_the_output_does_not_follow_symlinks_or_break_devices() {
     let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), "/dev/null"]);
     assert_eq!(code, 0, "writing to /dev/null: {stderr}");
 
-    // A planted temporary must not be followed to somewhere else.
+    // A planted temporary must not be followed to somewhere else. The name
+    // the binary stages under carries its own pid, so the symlinks are
+    // planted by the shell that then becomes that process.
     let victim = dir.join("victim.txt");
     std::fs::write(&victim, b"victim").unwrap();
     let dest = dir.join("dest.bin");
-    for attempt in 0..4 {
-        let planted = dir.join(format!("dest.bin.part{}-{attempt}", std::process::id()));
-        let _ = std::os::unix::fs::symlink(&victim, &planted);
-    }
-    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), dest.to_str().unwrap()]);
-    assert_eq!(code, 0, "{stderr}");
+    let plant_and_run = format!(
+        "ln -s {victim} {dest}.part$$; for i in 0 1 2 3; do ln -s {victim} {dest}.part$$-$i; done; \
+         exec {bin} decompress {archive} {dest}",
+        victim = victim.display(),
+        dest = dest.display(),
+        bin = env!("CARGO_BIN_EXE_nexcomp"),
+        archive = archive.display(),
+    );
+    let planted = Command::new("/bin/sh").arg("-c").arg(&plant_and_run).output().unwrap();
+    assert!(planted.status.success(), "{}", String::from_utf8_lossy(&planted.stderr));
     assert_eq!(std::fs::read(&victim).unwrap(), b"victim", "the symlink target was written through");
     assert_eq!(std::fs::read(&dest).unwrap().len(), 40_000);
+    assert!(std::fs::symlink_metadata(&dest).unwrap().is_file(), "the output is a file, not a link");
 
     // A failed decode leaves the destination as it was.
     let truncated = dir.join("truncated.nxc");
@@ -235,4 +242,57 @@ fn staging_the_output_does_not_follow_symlinks_or_break_devices() {
     let (code, _) = run(&["decompress", truncated.to_str().unwrap(), precious.to_str().unwrap()]);
     assert_ne!(code, 0);
     assert_eq!(std::fs::read(&precious).unwrap(), b"precious");
+}
+
+/// Staging must not change what the destination is: its permissions survive,
+/// a read-only file is refused rather than silently replaced, and a symlinked
+/// destination is followed to the file it names instead of being written
+/// through.
+#[test]
+fn staging_preserves_what_the_destination_was() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("staging-modes");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.bin");
+    std::fs::write(&source, vec![3u8; 20_000]).unwrap();
+    let archive = dir.join("source.nxc");
+    let (code, stderr) = run(&["compress", source.to_str().unwrap(), archive.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+
+    // A private destination comes back private.
+    let private = dir.join("private.out");
+    std::fs::write(&private, b"old").unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), private.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    let mode = std::fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the restored file is more readable than what it replaced");
+
+    // A read-only destination is refused, as writing to it directly was.
+    let locked = dir.join("locked.out");
+    std::fs::write(&locked, b"keep").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let (code, _) = run(&["decompress", archive.to_str().unwrap(), locked.to_str().unwrap()]);
+    assert_ne!(code, 0, "a read-only destination must not be replaced");
+    assert_eq!(std::fs::read(&locked).unwrap(), b"keep");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // A symlinked destination names the file to replace; a failed decode over
+    // it leaves that file alone and the link in place.
+    let target = dir.join("target.out");
+    std::fs::write(&target, b"target").unwrap();
+    let link = dir.join("link.out");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let truncated = dir.join("truncated.nxc");
+    let whole = std::fs::read(&archive).unwrap();
+    std::fs::write(&truncated, &whole[..whole.len() / 2]).unwrap();
+    let (code, _) = run(&["decompress", truncated.to_str().unwrap(), link.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    assert_eq!(std::fs::read(&target).unwrap(), b"target", "a failed decode truncated the link target");
+    let (code, stderr) = run(&["decompress", archive.to_str().unwrap(), link.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read(&target).unwrap().len(), 20_000);
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
 }

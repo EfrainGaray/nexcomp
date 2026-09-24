@@ -221,9 +221,11 @@ mod tests {
             result.sequence.len()
         );
 
-        let time_limit = if cfg!(debug_assertions) { 3.0 } else { 1.0 };
+        // A wall-clock bound catches an order-of-magnitude regression; it
+        // cannot tell a slow build from a busy machine, so it is loose enough
+        // that a loaded one does not report a regression that is not there.
+        let time_limit = if cfg!(debug_assertions) { 10.0 } else { 4.0 };
 
-        // Keep the performance guard meaningful without making debug/test runs flaky.
         assert!(
             elapsed.as_secs_f64() < time_limit,
             "1MB encode took too long: {:.3}s (limit {:.1}s)",

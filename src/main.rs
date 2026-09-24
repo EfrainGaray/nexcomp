@@ -108,6 +108,24 @@ fn compress_data(data: &[u8], verbose: bool) -> Vec<u8> {
     compressed
 }
 
+/// Where the output really goes: a symlink is followed once, so the temporary
+/// is staged beside the file that will be replaced and the link itself is left
+/// alone. Anything else is its own destination.
+fn destination(path: &str) -> String {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match fs::read_link(path) {
+            Ok(target) if target.is_absolute() => target.to_string_lossy().into_owned(),
+            Ok(target) => std::path::Path::new(path)
+                .parent()
+                .map_or_else(|| target.clone(), |dir| dir.join(&target))
+                .to_string_lossy()
+                .into_owned(),
+            Err(_) => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
+}
+
 /// Whether `path` is somewhere a temporary file can stand in for: a plain file
 /// that does not exist yet, or one that does. A device, a fifo or `/dev/null`
 /// is written straight through, because renaming onto it would replace it.
@@ -119,15 +137,32 @@ fn can_stage(path: &str) -> bool {
     }
 }
 
+/// Refuse a destination its owner made read-only, the way writing to it
+/// directly always did: renaming over a file needs no permission on the file,
+/// only on its directory, so staging would otherwise replace it silently.
+fn refuse_read_only(path: &str) -> io::Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.permissions().readonly()) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{path} is read-only")));
+    }
+    Ok(())
+}
+
 /// A file next to `path` that does not exist yet, opened by this process
 /// alone: `create_new` fails rather than following a symlink someone planted
-/// or reusing a stale temporary. Returns the file and the name to rename from.
+/// or reusing a stale temporary. The new file takes the permissions of the
+/// file it will replace, so restoring over a private file keeps it private.
+/// Returns the file and the name to rename from.
 fn staged_file(path: &str) -> io::Result<(fs::File, String)> {
     let pid = std::process::id();
     for attempt in 0..64u32 {
         let candidate = format!("{path}.part{pid}-{attempt}");
         match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
-            Ok(file) => return Ok((file, candidate)),
+            Ok(file) => {
+                if let Ok(existing) = fs::metadata(path) {
+                    let _ = file.set_permissions(existing.permissions());
+                }
+                return Ok((file, candidate));
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
@@ -138,6 +173,8 @@ fn staged_file(path: &str) -> io::Result<(fs::File, String)> {
 /// Write `bytes` to `path`, through a temporary file in the same directory
 /// when `path` is a plain file, so a failure leaves what was there untouched.
 fn write_atomically(path: &str, bytes: &[u8]) -> io::Result<()> {
+    let path = &destination(path);
+    refuse_read_only(path)?;
     if !can_stage(path) {
         return fs::write(path, bytes);
     }
@@ -161,6 +198,8 @@ fn decompress_to_file(data: &[u8], path: &str) -> Result<usize, NexcompError> {
     }
     // A device or a fifo cannot be renamed onto, so it is written straight
     // through, as every release before 1.8.0 did for every destination.
+    let path = &destination(path);
+    refuse_read_only(path)?;
     let staged = can_stage(path).then(|| staged_file(path)).transpose()?;
     let (file, partial) = match staged {
         Some((file, partial)) => (file, Some(partial)),
@@ -226,27 +265,32 @@ fn password(argv: Option<String>, file: Option<&str>, confirm: bool) -> Result<Z
 
 /// Strip the encryption wrapper (NXE2 or NXE3) if the file has one.
 fn open_payload(file_data: Vec<u8>, argv: Option<String>, password_file: Option<&str>) -> Result<Payload, NexcompError> {
-    if !crypto::is_sealed(&file_data) {
-        return Ok(Payload { sealed: false, bytes: file_data });
-    }
+    let Some(wrapper) = crypto::wrapper_magic(&file_data) else {
+        return Ok(Payload { wrapper: None, declared_len: 0, bytes: file_data });
+    };
+    let declared_len = crypto::declared_length(&file_data).unwrap_or(u64::MAX);
     let pw = password(argv, password_file, false)?;
-    Ok(Payload { sealed: true, bytes: crypto::open(&file_data, pw.as_bytes())? })
+    Ok(Payload { wrapper: Some(wrapper), declared_len, bytes: crypto::open(&file_data, pw.as_bytes())? })
 }
 
 /// What a file holds once any encryption is off it, and whether the wrapper's
 /// tag vouched for it. Releases up to 1.7.0 sealed an empty input as an empty
 /// payload instead of a container, and those files still have to open.
 struct Payload {
-    sealed: bool,
+    /// The wrapper's magic, if the file had one.
+    wrapper: Option<&'static str>,
+    /// The original length that wrapper's authenticated header declared.
+    declared_len: u64,
     bytes: Vec<u8>,
 }
 
 impl Payload {
     /// An empty payload out of a wrapper is the empty file an older release
-    /// sealed: the AEAD tag says so. An empty plain file is just a file that
-    /// is not an archive.
+    /// sealed: the tag covers both the payload and the length its header
+    /// declares, so both have to say empty. An empty plain file is just a file
+    /// that is not an archive.
     fn is_sealed_empty(&self) -> bool {
-        self.sealed && self.bytes.is_empty()
+        self.wrapper.is_some() && self.bytes.is_empty() && self.declared_len == 0
     }
 }
 
@@ -325,7 +369,12 @@ fn run(cli: Cli) -> Result<(), NexcompError> {
             let payload = open_payload(file_data, decrypt, password_file.as_deref())?;
 
             if payload.is_sealed_empty() {
-                println!("format=NXE3 size=0 codec=none");
+                let wrapper = payload.wrapper.unwrap_or("NXE3");
+                if show_codec {
+                    println!("none");
+                } else {
+                    println!("format={wrapper} size=0 codec=none");
+                }
                 return Ok(());
             }
             let payload = payload.bytes;

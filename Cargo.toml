@@ -9,6 +9,9 @@ license = "MIT"
 [dependencies]
 thiserror = "1.0"
 chacha20poly1305 = "0.10"
+# Direct only to turn on its zeroize feature, which chacha20poly1305 leaves off:
+# without it the one-time Poly1305 key and the MAC state are freed unwiped.
+poly1305 = { version = "0.8", features = ["zeroize"] }
 clap = { version = "4.4", features = ["derive"] }
 rand = "0.9"
 rayon = "1.10"

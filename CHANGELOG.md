@@ -39,9 +39,17 @@ called stable. Container magic `NX15`; `NX14` and `NX13` still decode.
   a fifo, `/dev/null` — is still written straight through, and the temporary is
   created with `create_new`, so a planted symlink or a stale temporary cannot
   be followed.
+- **The Argon2 working memory is wiped.** Up to 1.7.0 the whole block array —
+  64 MiB of password-derived state, measured at 99.6% still readable — was
+  freed as it stood: the crate's `zeroize` feature covers only its initial
+  hash. The blocks are now allocated here and zeroed on drop (measured 100%).
 - `MAX_KDF` drops from 1 GiB / 16 passes / 16 lanes to 256 MiB / 8 / 4: a
   forged NXE3 header bought a minute of work before the tag failed. Nothing
   this project writes goes above the 64 MiB default.
+- A destination that already exists keeps its permissions, and one its owner
+  made read-only is refused instead of being replaced: renaming over a file
+  needs permission on the directory, not on the file. A symlinked destination
+  is followed to the file it names, which stays intact when a decode fails.
 - Huffman code lengths are checked against Kraft's inequality, and an inner
   block that codes no token is refused.
 - `NEXCOMP_PASSWORD` that is not valid UTF-8 is an error instead of being read
